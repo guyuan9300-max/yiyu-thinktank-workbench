@@ -20,6 +20,22 @@ import pytest
 from tests._known_failing import KNOWN_FAILING_TESTS
 
 
+@pytest.fixture(autouse=True)
+def _disable_application_startup_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep HTTP tests isolated from process-wide daemon workers.
+
+    The application exposes this switch specifically for environments that do
+    not own a long-lived server process.  Without it, each TestClient starts
+    workers such as team sync and startup cloud retry; some of those daemons
+    intentionally outlive the ASGI lifespan and can observe another test's
+    partially seeded cloud session.  Worker units normally call their services
+    directly; the one startup-worker integration test explicitly removes this
+    override before entering its TestClient lifespan.
+    """
+
+    monkeypatch.setenv("YIYU_DISABLE_STARTUP_WORKERS", "1")
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """对 KNOWN_FAILING_TESTS 列表里的每个 nodeid，自动追加 xfail 标记。"""
     marker = pytest.mark.xfail(

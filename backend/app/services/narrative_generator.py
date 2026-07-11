@@ -1188,7 +1188,12 @@ def _all_stub(reason: str) -> dict[str, dict[str, Any]]:
 
 
 def upsert_commitments_from_narrative(
-    db: Any, client_id: str, dims: dict[str, dict[str, Any]],
+    db: Any,
+    client_id: str,
+    dims: dict[str, dict[str, Any]],
+    *,
+    sandbox_id: str = "",
+    organization_id: str = "",
 ) -> dict[str, int]:
     """机制化 P0: 把 narrative 输出的 structuredTodos 写入 commitments 表.
 
@@ -1213,7 +1218,20 @@ def upsert_commitments_from_narrative(
     try:
         existing_task_titles = [
             str(r["title"] or "")
-            for r in db.fetchall("SELECT title FROM tasks WHERE client_id=?", (client_id,))
+            for r in db.fetchall(
+                """SELECT title
+                   FROM tasks
+                   WHERE client_id = ?
+                     AND (? = '' OR COALESCE(sandbox_id, '') = ?)
+                     AND (? = '' OR COALESCE(organization_id, '') = ?)""",
+                (
+                    client_id,
+                    sandbox_id,
+                    sandbox_id,
+                    organization_id,
+                    organization_id,
+                ),
+            )
         ]
     except Exception:
         existing_task_titles = []

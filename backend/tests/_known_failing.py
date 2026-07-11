@@ -111,7 +111,6 @@ KNOWN_FAILING_TESTS: frozenset[str] = frozenset({
     "tests/test_org_membership_apply_verify.py::test_apply_org_membership_raises_when_verify_stays_none",
     "tests/test_org_membership_apply_verify.py::test_apply_org_membership_verifies_cloud_persistence",
     "tests/test_organization_dna_v2.py::test_organization_dna_v2_collects_task_and_review_evolving_signals",
-    "tests/test_organization_dna_v2.py::test_organization_dna_v2_gap_stays_candidate_when_evidence_is_weak",
     "tests/test_organization_dna_v2.py::test_organization_dna_v2_refresh_generates_snapshot",
     "tests/test_review_visibility.py::test_department_lead_can_view_own_agent_execution_tasks_only",
     "tests/test_review_visibility.py::test_department_lead_only_receives_own_department_summary",

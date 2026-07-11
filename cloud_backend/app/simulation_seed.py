@@ -503,6 +503,15 @@ def seed_simulated_review_org(
             (SIMULATION_SOURCE_TYPE, *sim_user_ids),
         )
 
+    _upsert_employee(
+        db,
+        organization_id=organization_id,
+        user_id=ceo_user_id,
+        full_name=ceo_name,
+        email="guyuan@yiyu-system.com",
+        password=DEFAULT_SIM_PASSWORD,
+        primary_role="admin",
+    )
     db.execute(
         "UPDATE org_units SET leader_user_id = ?, updated_at = ? WHERE id = 'unit_org'",
         (ceo_user_id, timestamp),
@@ -562,6 +571,33 @@ def seed_simulated_review_org(
 
     for department_index, department in enumerate(DEPARTMENTS):
         leader_name = next(item.full_name for item in employee_profiles if item.user_id == department.leader_user_id)
+        db.execute(
+            """
+            INSERT INTO org_departments(
+                id, organization_id, name, color, leader_user_id, leader_name,
+                quarterly_focus_json, active, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                organization_id = excluded.organization_id,
+                name = excluded.name,
+                color = excluded.color,
+                leader_user_id = excluded.leader_user_id,
+                leader_name = excluded.leader_name,
+                quarterly_focus_json = excluded.quarterly_focus_json,
+                active = 1,
+                updated_at = excluded.updated_at
+            """,
+            (
+                department.unit_id,
+                organization_id,
+                department.name,
+                department.tag_specs[0][1],
+                department.leader_user_id,
+                leader_name,
+                to_json(list(department.focus_tracks)),
+                timestamp,
+            ),
+        )
         db.execute(
             """
             INSERT OR REPLACE INTO org_units(id, organization_id, parent_id, name, unit_type, leader_user_id, created_at, updated_at)

@@ -18,6 +18,8 @@ from xml.etree import ElementTree as ET
 from docx import Document as WordDocument
 
 from app.db import Database, from_json, to_json
+from app.services.async_job_scope import resolve_client_workspace_context
+from app.services.workspace_context import WorkspaceContext
 from app.services.data_center_access import (
     DataCenterAccessContext,
     build_document_access_where,
@@ -80,23 +82,22 @@ DEFAULT_INBOX_LABEL = "收件箱"
 WORKSPACE_BACKFILL_EXTENSIONS = {".pdf", ".docx", ".md", ".txt", ".pptx", ".xlsx", ".json", ".csv", *IMAGE_EXTENSIONS}
 
 
-# V2.3 Step 1 · 单组织临时方案 — 解析 team context (org_id / owner / dept)
-# 用法: process_knowledge_job 等异步 worker 没有 user session, 用本函数取默认上下文.
-# 多组织上线后改成 user_id 反查路径.
-def _resolve_team_context_for_async_worker(db: Any) -> dict[str, str]:
-    """从 mirror_organizations + org_members_v 取默认 team context.
+# V2.3 Step 1 · 从已持久化 WorkspaceContext 解析 team context。
+def _resolve_team_context_for_async_worker(
+    db: Any,
+    workspace_context: WorkspaceContext,
+) -> dict[str, str]:
+    """按明确 organization_id 解析团队上下文，绝不选择第一/默认组织。
 
     返:
       {organization_id, owner_user_id, department_id, visibility_scope}
       表不存在 / 空时返 {} (调用方就退化成单机模式, 不接 source_registry)
     """
+    org_id = str(workspace_context.organization_id or "").strip()
+    if not org_id:
+        return {}
+    fallback = {"organization_id": org_id, "visibility_scope": "project_public"}
     try:
-        org_row = db.fetchone("SELECT id FROM mirror_organizations LIMIT 1")
-        if not org_row:
-            return {}
-        org_id = str(org_row["id"] if hasattr(org_row, "keys") else org_row[0])
-        if not org_id:
-            return {}
         # 跳过系统账号 (user_admin / @yiyu-system.com), 取真人 admin
         admin_row = db.fetchone(
             """
@@ -120,10 +121,10 @@ def _resolve_team_context_for_async_worker(db: Any) -> dict[str, str]:
                 "department_id": dept_id,
                 "visibility_scope": "project_public",
             }
-        return {"organization_id": org_id, "visibility_scope": "project_public"}
+        return fallback
     except Exception as exc:
-        logger.warning("V2.3 _resolve_team_context_for_async_worker failed (fallback empty): %s", exc)
-        return {}
+        logger.warning("V2.3 scoped team-context resolution failed: %s", exc)
+        return fallback
 QUERY_STOPWORDS = {
     "请",
     "一下",
@@ -3362,7 +3363,21 @@ def upsert_canonical_text_document(
     # 修补 task_doc / meeting_doc / weekly_review_doc 等 canonical 路径
     # (它们都走这个 upsert, 历史上调用方不传 4 个团队字段)
     if not organization_id:
-        _ctx = _resolve_team_context_for_async_worker(db)
+        # 旧本地资料允许 client 尚未迁入 sandbox；异步 worker 已在入口强制校验，
+        # 因而这里只对有明确父 sandbox_id 的 client 解析 WorkspaceContext，绝不猜 active/default。
+        client_scope = db.fetchone(
+            "SELECT sandbox_id FROM clients WHERE id = ?",
+            (client_id,),
+        )
+        client_sandbox_id = str(client_scope["sandbox_id"] or "").strip() if client_scope else ""
+        _ctx = (
+            _resolve_team_context_for_async_worker(
+                db,
+                resolve_client_workspace_context(db, client_id),
+            )
+            if client_sandbox_id
+            else {}
+        )
         organization_id = _ctx.get("organization_id", "") or organization_id
         if not owner_user_id:
             owner_user_id = _ctx.get("owner_user_id", "") or owner_user_id
@@ -3977,6 +3992,7 @@ def backfill_workspace_import(
     source_root: Path | None = None,
     progress_callback: Callable[[int], None] | None = None,
 ) -> dict[str, Any]:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     ensure_client_folder_rows(db, data_dir, client_id)
     workspace_root = source_root or (data_dir / "client_workspace" / client_id)
     workspace_root.mkdir(parents=True, exist_ok=True)
@@ -3992,10 +4008,18 @@ def backfill_workspace_import(
     )
     db.execute(
         """
-        INSERT INTO knowledge_jobs(id, client_id, job_type, status, payload_json, total_items, processed_items, last_error, created_at, started_at, finished_at, updated_at)
-        VALUES(?, ?, 'backfill_workspace_import', 'running', ?, 0, 0, NULL, ?, ?, NULL, ?)
+        INSERT INTO knowledge_jobs(id, client_id, sandbox_id, job_type, status, payload_json, total_items, processed_items, last_error, created_at, started_at, finished_at, updated_at)
+        VALUES(?, ?, ?, 'backfill_workspace_import', 'running', ?, 0, 0, NULL, ?, ?, NULL, ?)
         """,
-        (job_id, client_id, to_json({"sourceRoot": str(workspace_root)}), timestamp, timestamp, timestamp),
+        (
+            job_id,
+            client_id,
+            workspace_context.sandbox_id,
+            to_json({"sourceRoot": str(workspace_root)}),
+            timestamp,
+            timestamp,
+            timestamp,
+        ),
     )
 
     existing_paths: set[str] = set()
@@ -4015,6 +4039,7 @@ def backfill_workspace_import(
             value = str(row[column] or "").strip()
             if value:
                 existing_paths.add(value)
+    # knowledge_documents inherits the already-validated WorkspaceContext through client_id.
     for row in db.fetchall(
         """
         SELECT original_path, import_source_path, current_human_path
@@ -4105,8 +4130,8 @@ def backfill_workspace_import(
             (imported, skipped, import_id),
         )
         db.execute(
-            "UPDATE knowledge_jobs SET processed_items = ?, updated_at = ? WHERE id = ?",
-            (imported, now_iso(), job_id),
+            "UPDATE knowledge_jobs SET processed_items = ?, updated_at = ? WHERE id = ? AND sandbox_id = ?",
+            (imported, now_iso(), job_id, workspace_context.sandbox_id),
         )
         if progress_callback:
             progress_callback(imported)
@@ -4121,9 +4146,9 @@ def backfill_workspace_import(
         """
         UPDATE knowledge_jobs
         SET status = 'completed', processed_items = ?, finished_at = ?, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND sandbox_id = ?
         """,
-        (imported, finished_at, finished_at, job_id),
+        (imported, finished_at, finished_at, job_id, workspace_context.sandbox_id),
     )
     return {
         "importId": import_id,
@@ -4136,6 +4161,7 @@ def backfill_workspace_import(
 
 
 def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None = None) -> dict[str, Any]:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     runtime_status = (
         get_vector_runtime_status(db, data_dir=data_dir, client_id=client_id)
         if data_dir is not None
@@ -4155,8 +4181,7 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         }
     )
     main_job_placeholders = ",".join("?" for _ in MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
-    job_filter = f"client_id = ? AND job_type IN ({main_job_placeholders})"
-    job_params = (client_id, *MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
+    job_params = (workspace_context.sandbox_id, client_id, *MAIN_KNOWLEDGE_STATUS_JOB_TYPES)
     document_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript')", (client_id,)) or 0)
     v2_background_docs = int(db.scalar("SELECT COUNT(1) AS count FROM v2_documents WHERE client_id = ? AND material_layer = 'background'", (client_id,)) or 0)
     section_count = int(db.scalar("SELECT COUNT(1) AS count FROM v2_sections WHERE v2_document_id IN (SELECT id FROM v2_documents WHERE client_id = ? AND material_layer IN ('evidence', 'external_media_transcript'))", (client_id,)) or 0)
@@ -4174,20 +4199,20 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
     memory_docs = int(db.scalar("SELECT COUNT(1) AS count FROM knowledge_surrogates WHERE client_id = ? AND source_type = 'memory_answer'", (client_id,)) or 0)
     pending_jobs = int(
         db.scalar(
-            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE {job_filter} AND status = 'queued'",
+            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE sandbox_id = ? AND client_id = ? AND job_type IN ({main_job_placeholders}) AND status = 'queued'",
             job_params,
         )
         or 0
     )
     running_jobs = int(
         db.scalar(
-            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE {job_filter} AND status = 'running'",
+            f"SELECT COUNT(1) AS count FROM knowledge_jobs WHERE sandbox_id = ? AND client_id = ? AND job_type IN ({main_job_placeholders}) AND status = 'running'",
             job_params,
         )
         or 0
     )
     last_job = db.fetchone(
-        f"SELECT * FROM knowledge_jobs WHERE {job_filter} ORDER BY created_at DESC LIMIT 1",
+        f"SELECT * FROM knowledge_jobs WHERE sandbox_id = ? AND client_id = ? AND job_type IN ({main_job_placeholders}) ORDER BY created_at DESC LIMIT 1",
         job_params,
     )
     last_status = str(last_job["status"]) if last_job else "idle"
@@ -4196,7 +4221,7 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         f"""
         SELECT finished_at
         FROM knowledge_jobs
-        WHERE {job_filter} AND status = 'completed'
+        WHERE sandbox_id = ? AND client_id = ? AND job_type IN ({main_job_placeholders}) AND status = 'completed'
         ORDER BY finished_at DESC
         LIMIT 1
         """,

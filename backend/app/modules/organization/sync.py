@@ -156,6 +156,8 @@ def sync_organization_directory(
     cloud_base_url: str,
     cloud_token: str,
     derive_cru_from_local: bool = True,
+    client_sandbox_id: str | None = None,
+    expected_organization_id: str | None = None,
     http_get: Callable[..., Any] | None = None,
     now_iso: Callable[[], str] | None = None,
 ) -> SyncReport:
@@ -200,6 +202,12 @@ def sync_organization_directory(
     # ─── 第 2 步:转换 ───
     org_record = _normalize_organization(org_profile["organization"], synced_at)
     org_id = org_record["id"]
+    if expected_organization_id and org_id != expected_organization_id:
+        return SyncReport(
+            status="failed",
+            synced_at=synced_at,
+            error="organization identity mismatch",
+        )
 
     dept_records = [
         _normalize_department(d, org_id, synced_at) for d in org_profile.get("departments", [])
@@ -222,9 +230,19 @@ def sync_organization_directory(
     cru_skipped = 0
     if derive_cru_from_local:
         try:
-            client_rows = db.fetchall(
-                "SELECT id, related_user_ids_json, updated_at FROM clients"
-            )
+            if client_sandbox_id is None:
+                client_rows = db.fetchall(
+                    "SELECT id, related_user_ids_json, updated_at FROM clients"
+                )
+            else:
+                client_rows = db.fetchall(
+                    """
+                    SELECT id, related_user_ids_json, updated_at
+                    FROM clients
+                    WHERE COALESCE(sandbox_id, '') = ?
+                    """,
+                    (client_sandbox_id,),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("local clients fetch for CRU derive failed: %r", exc)
             client_rows = []
@@ -262,6 +280,8 @@ def sync_organization_directory(
                 ["id", "name", "slug", "cloud_updated_at", "synced_from_cloud_at"],
                 [org_record],
                 id_columns=["id"],
+                delete_scope_sql="id = ?",
+                delete_scope_params=[org_id],
             ))
             reports.append(_upsert_table(
                 db.conn,
@@ -270,6 +290,8 @@ def sync_organization_directory(
                  "parent_department_id", "active", "cloud_updated_at", "synced_from_cloud_at"],
                 dept_records,
                 id_columns=["id"],
+                delete_scope_sql="organization_id = ?",
+                delete_scope_params=[org_id],
             ))
             reports.append(_upsert_table(
                 db.conn,
@@ -282,21 +304,30 @@ def sync_organization_directory(
                  "cloud_updated_at", "synced_from_cloud_at"],
                 user_records,
                 id_columns=["id"],
+                delete_scope_sql="organization_id = ?",
+                delete_scope_params=[org_id],
             ))
             if derive_cru_from_local:
                 # scope = 本地 clients 表里所有 client_id
                 # 这样能正确处理:client 删了 → 它的 cru row 也删
                 #                 client 的 related_user_ids 缩减 → 多出来的 user_id 删
+                if cru_client_ids:
+                    cru_delete_scope_sql = "client_id IN ({})".format(
+                        ",".join("?" * len(cru_client_ids))
+                    )
+                elif client_sandbox_id is None:
+                    cru_delete_scope_sql = "1=1"
+                else:
+                    # An explicitly scoped sandbox with no clients owns no CRU rows.
+                    # Never turn that empty set into a global delete.
+                    cru_delete_scope_sql = "0=1"
                 cru_report = _upsert_table(
                     db.conn,
                     "mirror_client_related_users",
                     ["client_id", "user_id", "order_index", "cloud_updated_at", "synced_from_cloud_at"],
                     cru_records,
                     id_columns=["client_id", "user_id"],
-                    delete_scope_sql=(
-                        "client_id IN ({})".format(",".join("?" * len(cru_client_ids)))
-                        if cru_client_ids else "1=1"
-                    ),
+                    delete_scope_sql=cru_delete_scope_sql,
                     delete_scope_params=cru_client_ids,
                 )
                 reports.append(SyncTableReport(

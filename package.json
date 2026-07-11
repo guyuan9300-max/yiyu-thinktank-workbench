@@ -22,7 +22,7 @@
     "build:packaged-runtime": "node scripts/build-packaged-runtime.mjs",
     "build:mac-icon": "python3 scripts/generate-mac-icon.py",
     "build": "npm run build:main && npm run build:renderer && npm run build:backend-check && npm run build:version-manifest",
-    "test:calendar": "npm run build:main && node --test build/shared/calendar.test.js",
+    "test:calendar": "tsc -p tsconfig.calendar-tests.json && node --test tmp/calendar-tests/shared/calendar.test.js tmp/calendar-tests/shared/china-calendar.test.js",
     "test:collab-merge": "npm run build:main && node scripts/test-collab-merge.mjs",
     "backend:test": "cd backend && uv run pytest",
     "cloud:test": "cd cloud_backend && uv run pytest",
@@ -46,7 +46,8 @@
     "release:mac:publish:dry": "node scripts/publish-to-tos.mjs --dry-run",
     "release:mac:tos": "node scripts/release-mac-to-tos.mjs",
     "check:source-cleanliness": "node scripts/check-source-cleanliness.mjs",
-    "audit:sandbox": "python3 scripts/audit_sandbox_contract.py && python3 scripts/audit_sandbox_queries.py"
+    "audit:sandbox": "python3 scripts/audit_sandbox_contract.py && python3 scripts/audit_sandbox_queries.py",
+    "audit:python-deps": "bash scripts/audit-python-dependencies.sh"
   },
   "build": {
     "appId": "com.yiyu.selfworkbench2",
@@ -185,7 +186,7 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
-    "electron": "^37.6.1",
+    "electron": "^43.1.0",
     "electron-builder": "^26.0.12",
     "postcss": "^8.5.6",
     "tailwindcss": "^3.4.17",

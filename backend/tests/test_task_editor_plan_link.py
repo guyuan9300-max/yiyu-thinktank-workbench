@@ -11,6 +11,10 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import app.main as app_main  # noqa: E402
 from app.main import create_app, now_iso  # noqa: E402
+from app.services.sandbox_registry import (  # noqa: E402
+    ensure_organization_sandbox_for_session,
+    set_active_sandbox_setting,
+)
 
 
 BASE_URL = "http://127.0.0.1:47830"
@@ -35,9 +39,14 @@ def seed_cloud_session(client: TestClient) -> None:
     }
     state = client.app.state.app_state
     state.cloud_api_url = BASE_URL
-    state.db.set_setting("cloud_api_url", BASE_URL)
-    state.db.set_setting("cloud_access_token", "token_owner")
-    state.db.set_setting("cloud_session_user", json.dumps(user_payload, ensure_ascii=False))
+    ensure_organization_sandbox_for_session(
+        state.db,
+        organization_id="org_default",
+        organization_name="默认组织",
+        cloud_api_url=BASE_URL,
+    )
+    set_active_sandbox_setting(state.db, "cloud_access_token", "token_owner")
+    set_active_sandbox_setting(state.db, "cloud_session_user", json.dumps(user_payload, ensure_ascii=False))
 
 
 def test_create_task_returns_owner_in_collaborators(tmp_path: Path) -> None:

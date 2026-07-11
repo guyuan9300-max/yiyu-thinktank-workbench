@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "composite": false,
+    "rootDir": "src",
+    "outDir": "tmp/calendar-tests"
+  },
+  "include": [
+    "src/shared/calendar.ts",
+    "src/shared/calendar.test.ts",
+    "src/shared/china-calendar.ts",
+    "src/shared/china-calendar.test.ts"
+  ],
+  "exclude": []
+}

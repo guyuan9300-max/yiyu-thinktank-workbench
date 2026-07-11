@@ -86,7 +86,10 @@ def test_admin_writes_and_member_reads_object_storage_secret(tmp_path, monkeypat
     assert visible.json()["hasCredentials"] is True
     assert "credentials" not in visible.json()
 
-    secret = client.get("/api/v1/settings/org-object-storage-config/secret", headers=member_auth)
+    forbidden_secret = client.get("/api/v1/settings/org-object-storage-config/secret", headers=member_auth)
+    assert forbidden_secret.status_code == 403, forbidden_secret.text
+
+    secret = client.get("/api/v1/settings/org-object-storage-config/secret", headers=admin_headers)
     assert secret.status_code == 200, secret.text
     secret_payload = secret.json()
     assert secret_payload["credentials"] == {"access_key_id": "AK", "secret_access_key": "SK"}
@@ -103,7 +106,7 @@ def test_admin_writes_and_member_reads_object_storage_secret(tmp_path, monkeypat
         },
     )
     assert updated.status_code == 200, updated.text
-    preserved_secret = client.get("/api/v1/settings/org-object-storage-config/secret", headers=member_auth)
+    preserved_secret = client.get("/api/v1/settings/org-object-storage-config/secret", headers=admin_headers)
     assert preserved_secret.status_code == 200, preserved_secret.text
     assert preserved_secret.json()["credentials"] == {"access_key_id": "AK", "secret_access_key": "SK"}
     assert preserved_secret.json()["extraConfig"]["bucket"] == "yiyu-files-next"

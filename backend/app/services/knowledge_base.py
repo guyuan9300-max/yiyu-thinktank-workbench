@@ -17,6 +17,7 @@ from typing import Any, Callable
 from xml.etree import ElementTree as ET
 
 from app.db import Database, from_json, to_json
+from app.services.async_job_scope import resolve_client_workspace_context
 from app.services.embedding_provider import build_embedding_provider
 from app.services.retrieval_model_settings import get_retrieval_model_settings, retrieval_embedding_signature
 
@@ -796,7 +797,9 @@ def clean_title_for_search(title: str) -> str:
     stem = Path(title).stem
     # 通用机构前缀: "<2-8 字客户/项目名>文件_..." (中英文 + 数字)
     stem = re.sub(r"^[一-龥A-Za-z0-9]{2,8}文件[+_\s-]*", "", stem)
-    # 通用编号后缀: "_<英文缩写>?<6-8 位数字>" (项目号/工单号/日期)
+    # 导入器后缀: "_<来源/客户短名>_<6-8 位日期或工单号>"。
+    stem = re.sub(r"[_\s]+[^_\s]{2,24}[_-]\d{6,8}$", "", stem)
+    # 无来源短名时的通用编号后缀。
     stem = re.sub(r"[_\s]+[A-Za-z]{0,8}[_-]?\d{6,8}$", "", stem)
     stem = re.sub(r"[_\s]+\d+$", "", stem)
     stem = re.sub(r"[_+]+", " ", stem)
@@ -3396,6 +3399,7 @@ def backfill_knowledge_documents(
 
 
 def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None = None) -> dict[str, Any]:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     total_documents = db.scalar("SELECT COUNT(1) AS count FROM knowledge_documents WHERE client_id = ?", (client_id,))
     total_chunks = db.scalar(
         """
@@ -3439,37 +3443,37 @@ def compute_knowledge_status(db: Database, client_id: str, data_dir: Path | None
         """
         SELECT COUNT(1) AS count
         FROM knowledge_jobs
-        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'queued'
+        WHERE sandbox_id = ? AND client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'queued'
         """,
-        (client_id,),
+        (workspace_context.sandbox_id, client_id),
     )
     running_jobs = db.scalar(
         """
         SELECT COUNT(1) AS count
         FROM knowledge_jobs
-        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'running'
+        WHERE sandbox_id = ? AND client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'running'
         """,
-        (client_id,),
+        (workspace_context.sandbox_id, client_id),
     )
     latest_job = db.fetchone(
         """
         SELECT status, last_error, finished_at
         FROM knowledge_jobs
-        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates'
+        WHERE sandbox_id = ? AND client_id = ? AND job_type != 'generate_client_dna_candidates'
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (client_id,),
+        (workspace_context.sandbox_id, client_id),
     )
     latest_successful_job = db.fetchone(
         """
         SELECT finished_at
         FROM knowledge_jobs
-        WHERE client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'completed' AND finished_at IS NOT NULL
+        WHERE sandbox_id = ? AND client_id = ? AND job_type != 'generate_client_dna_candidates' AND status = 'completed' AND finished_at IS NOT NULL
         ORDER BY finished_at DESC
         LIMIT 1
         """,
-        (client_id,),
+        (workspace_context.sandbox_id, client_id),
     )
     embedding_status = embedding_backend_status(data_dir) if data_dir else {"mode": "hash_fallback", "model": None, "error": None}
     latest_job_status = str(latest_job["status"]) if latest_job and latest_job["status"] else ("running" if running_jobs else "queued" if pending_jobs else "idle")
@@ -3594,15 +3598,16 @@ def fetch_recent_reclass_events(db: Database, client_id: str, limit: int = 8) ->
 
 
 def fetch_recent_knowledge_jobs(db: Database, client_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     rows = db.fetchall(
         """
         SELECT *
         FROM knowledge_jobs
-        WHERE client_id = ?
+        WHERE sandbox_id = ? AND client_id = ?
         ORDER BY updated_at DESC
         LIMIT ?
         """,
-        (client_id, limit),
+        (workspace_context.sandbox_id, client_id, limit),
     )
     def _job_item_labels(row: Any) -> list[str]:
         payload = from_json(str(row["payload_json"] or "{}"), {})
@@ -3665,6 +3670,7 @@ def fetch_recent_knowledge_jobs(db: Database, client_id: str, limit: int = 8) ->
             lambda labels, events: {
                 "id": str(row["id"]),
                 "clientId": str(row["client_id"]),
+                "sandboxId": str(row["sandbox_id"]) if row["sandbox_id"] else None,
                 "jobType": str(row["job_type"]),
                 "status": str(row["status"]),
                 "totalItems": int(row["total_items"]),

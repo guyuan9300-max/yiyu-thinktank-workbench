@@ -116,6 +116,71 @@ def test_profile_after_sync_returns_full_data(tmp_path: Path):
     assert "CEO" in guyuan["projectRoleLabels"]
 
 
+def test_scoped_sync_with_empty_sandbox_preserves_other_sandbox_cru(
+    tmp_path: Path,
+) -> None:
+    client = _make_client(tmp_path)
+    db = client.app.state.app_state.db
+    db.execute(
+        """
+        INSERT INTO mirror_client_related_users(
+            client_id, user_id, order_index, cloud_updated_at, synced_from_cloud_at
+        ) VALUES(?, ?, 0, ?, ?)
+        """,
+        ("client-b", "user-b", "2026-07-10T00:00:00Z", "2026-07-10T00:00:00Z"),
+    )
+    profile_a = {
+        "organization": {
+            "organizationId": "org-a",
+            "name": "组织 A",
+            "slug": "org-a",
+            "updatedAt": "2026-07-11T00:00:00Z",
+        },
+        "departments": [],
+        "bindings": [],
+    }
+
+    report = sync_organization_directory(
+        db,
+        cloud_base_url="https://org-a.example.test",
+        cloud_token="token-a",
+        client_sandbox_id="sandbox-a-with-no-clients",
+        expected_organization_id="org-a",
+        http_get=_mock_http(profile_a, []),
+        now_iso=lambda: "2026-07-11T00:00:00Z",
+    )
+
+    assert report.status == "ok"
+    assert db.fetchone(
+        """
+        SELECT client_id, user_id
+        FROM mirror_client_related_users
+        WHERE client_id = ? AND user_id = ?
+        """,
+        ("client-b", "user-b"),
+    ) is not None
+
+
+def test_sync_rejects_unexpected_cloud_organization_before_writes(
+    tmp_path: Path,
+) -> None:
+    client = _make_client(tmp_path)
+    db = client.app.state.app_state.db
+
+    report = sync_organization_directory(
+        db,
+        cloud_base_url="https://org-a.example.test",
+        cloud_token="token-a",
+        expected_organization_id="org-a",
+        http_get=_mock_http(_profile_sample(), _employees_sample()),
+        now_iso=lambda: "2026-07-11T00:00:00Z",
+    )
+
+    assert report.status == "failed"
+    assert report.error == "organization identity mismatch"
+    assert db.scalar("SELECT COUNT(1) FROM mirror_organizations") == 0
+
+
 def test_sync_without_cloud_returns_error(tmp_path: Path):
     """没配 cloud token → 客户端错误(400 / 503,具体看 cloud_api_base_url 行为)"""
     client = _make_client(tmp_path)

@@ -4712,6 +4712,7 @@ class WorkspaceContextRefreshEnqueuePayloadRecord(BaseModel):
 class WorkspaceContextRefreshEventRecord(BaseModel):
     id: str
     clientId: str
+    sandboxId: str | None = None
     scopeType: str
     scopeId: str
     sourceType: str
@@ -7603,6 +7604,7 @@ class KnowledgeJobEventRecord(BaseModel):
 class KnowledgeJobRecord(BaseModel):
     id: str
     clientId: str
+    sandboxId: str | None = None
     jobType: str
     status: Literal["queued", "running", "completed", "failed"]
     totalItems: int
@@ -7784,6 +7786,7 @@ class AnalysisJobRecord(BaseModel):
     id: str
     jobType: AnalysisJobType
     clientId: str
+    sandboxId: str | None = None
     scopeType: AnalysisScopeType
     scopeId: str
     status: AnalysisJobStatus

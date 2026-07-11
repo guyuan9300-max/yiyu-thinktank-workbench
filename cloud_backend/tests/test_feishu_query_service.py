@@ -434,12 +434,17 @@ def test_model_parse_can_filter_tasks_by_collaboration_partner(tmp_path, monkeyp
     monkeypatch.setattr(
         cloud_main,
         "_load_feishu_query_model_config",
-        lambda state, org_id: cloud_main.FeishuQueryModelConfig(api_key="demo-key", model="demo-model"),
+        lambda state, org_id: cloud_main.FeishuQueryModelConfig(
+            api_key="demo-key",
+            model="demo-model",
+            base_url="https://models.example.test/v1",
+            provider="test",
+        ),
     )
     monkeypatch.setattr(
         cloud_main,
         "_sync_qwen_chat",
-        lambda api_key, payload, timeout: json.dumps(
+        lambda api_key, payload, timeout, *, base_url: json.dumps(
             {
                 "intent": "tasks_list",
                 "status_filter": "open",
@@ -510,12 +515,17 @@ def test_model_parse_can_distinguish_overdue_unfinished_tasks(tmp_path, monkeypa
     monkeypatch.setattr(
         cloud_main,
         "_load_feishu_query_model_config",
-        lambda state, org_id: cloud_main.FeishuQueryModelConfig(api_key="demo-key", model="demo-model"),
+        lambda state, org_id: cloud_main.FeishuQueryModelConfig(
+            api_key="demo-key",
+            model="demo-model",
+            base_url="https://models.example.test/v1",
+            provider="test",
+        ),
     )
     monkeypatch.setattr(
         cloud_main,
         "_sync_qwen_chat",
-        lambda api_key, payload, timeout: json.dumps(
+        lambda api_key, payload, timeout, *, base_url: json.dumps(
             {
                 "intent": "tasks_list",
                 "status_filter": "overdue",

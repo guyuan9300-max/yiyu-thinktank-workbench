@@ -28,6 +28,21 @@ def _auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
 
 
+def _configure_org_ai(client: TestClient, headers: dict[str, str]) -> None:
+    response = client.post(
+        "/api/v1/settings/org-ai-config",
+        headers=headers,
+        json={
+            "aiProvider": "openai-compatible",
+            "aiProviderLabel": "当前组织测试模型",
+            "aiBaseUrl": "https://models.example.com/v1",
+            "aiModel": "org-test-model",
+            "apiKey": "org-test-key",
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
 def _insert_empty_client(
     app,
     client_id: str = "client_empty_mobile_contract",
@@ -100,10 +115,12 @@ def test_workspace_and_cockpit_return_structured_missing_for_valid_client(tmp_pa
 
 def test_thin_context_chat_returns_limited_context_metadata(tmp_path: Path, monkeypatch) -> None:
     _set_seed_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
     captured: dict[str, object] = {}
 
-    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        assert api_key == "org-test-key"
+        assert base_url == "https://models.example.com/v1"
         captured["systemPrompt"] = chat_payload["messages"][0]["content"]
         return "当前已知事实：只锁定了客户名，缺少工作台、DNA、会议和战略判断资料。"
 
@@ -112,6 +129,7 @@ def test_thin_context_chat_returns_limited_context_metadata(tmp_path: Path, monk
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
     headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
 
     response = client.post(
         "/api/v1/consultation/chat",
@@ -125,7 +143,10 @@ def test_thin_context_chat_returns_limited_context_metadata(tmp_path: Path, monk
     assert {"workspace", "client_dna", "meeting", "strategic_cockpit"}.issubset(
         set(body["contextQuality"]["missingSources"]),
     )
-    assert "严禁根据客户名字" in str(captured["systemPrompt"])
+    system_prompt = str(captured["systemPrompt"])
+    assert "严禁依据客户名字" in system_prompt
+    assert "组织类型或常识脑补" in system_prompt
+    assert "任何判断必须可在【已知事实】中找到出处" in system_prompt
 
 
 def _publish_understanding_snapshot(client: TestClient, headers: dict[str, str], client_id: str) -> None:
@@ -222,10 +243,12 @@ def test_client_understanding_endpoint_returns_published_snapshot(tmp_path: Path
 
 def test_chat_folds_understanding_into_context_and_evidence(tmp_path: Path, monkeypatch) -> None:
     _set_seed_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
     captured: dict[str, object] = {}
 
-    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        assert api_key == "org-test-key"
+        assert base_url == "https://models.example.com/v1"
         captured["systemPrompt"] = chat_payload["messages"][0]["content"]
         return "理解快照已读取，按已有结构化知识作答。"
 
@@ -236,6 +259,7 @@ def test_chat_folds_understanding_into_context_and_evidence(tmp_path: Path, monk
     )
     test_client = TestClient(app)
     headers = _auth_headers(test_client)
+    _configure_org_ai(test_client, headers)
 
     _publish_understanding_snapshot(test_client, headers, client_id)
 
@@ -259,9 +283,11 @@ def test_chat_folds_understanding_into_context_and_evidence(tmp_path: Path, monk
 def test_chat_out_of_scope_question_is_refused(tmp_path: Path, monkeypatch) -> None:
     """项目边界闸门: 在某客户上下文下问跑题问题 → out_of_scope 拒答, 不编答案/不标 grounded。"""
     _set_seed_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
 
-    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        assert api_key == "org-test-key"
+        assert base_url == "https://models.example.com/v1"
         # 模拟分类器判定 OUT; 若闸门生效, 主答案调用不应发生(out_of_scope 短路)
         return "OUT"
 
@@ -270,6 +296,7 @@ def test_chat_out_of_scope_question_is_refused(tmp_path: Path, monkeypatch) -> N
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
     headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
 
     response = client.post(
         "/api/v1/consultation/chat",
@@ -286,9 +313,11 @@ def test_chat_out_of_scope_question_is_refused(tmp_path: Path, monkeypatch) -> N
 def test_chat_in_scope_question_not_gated(tmp_path: Path, monkeypatch) -> None:
     """分类器判 IN 时, 闸门不拦截, 仍按原 limited/grounded 正常作答。"""
     _set_seed_env(tmp_path, monkeypatch)
-    monkeypatch.setenv("ARK_API_KEY", "test-key")
+    monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
 
-    def fake_qwen_chat(api_key, chat_payload, timeout):  # noqa: ANN001
+    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        assert api_key == "org-test-key"
+        assert base_url == "https://models.example.com/v1"
         return "IN"
 
     monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
@@ -296,6 +325,7 @@ def test_chat_in_scope_question_not_gated(tmp_path: Path, monkeypatch) -> None:
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
     headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
 
     response = client.post(
         "/api/v1/consultation/chat",

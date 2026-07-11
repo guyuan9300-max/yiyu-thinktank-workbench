@@ -10,10 +10,13 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
+from contextvars import ContextVar
 from concurrent.futures import ThreadPoolExecutor
 from app.services.system_logger import SystemLogger as _SystemLogger
 
@@ -1025,6 +1028,12 @@ from app.services.workspace_context import (
     WorkspaceContext,
     list_workspace_contexts,
     load_active_workspace_context,
+    load_workspace_context,
+)
+from app.services.async_job_scope import (
+    AsyncJobScopeError,
+    load_persisted_job_workspace_context,
+    resolve_client_workspace_context,
 )
 from app.services.analysis_center import (
     claim_next_analysis_job,
@@ -1963,173 +1972,6 @@ def _task_in_week(task: TaskRecord, week_label: str) -> bool:
     return start <= review_date <= end
 
 
-    def _local_task_tag_record(row) -> TaskTagRecord:
-        return TaskTagRecord(
-            id=str(row["id"]),
-            name=str(row["name"]),
-            color=str(row["color"] or ("#9CA3AF" if str(row["scope"]) == "self" else "#5B7BFE")),
-            scope=str(row["scope"]),
-            ownerUserId=str(row["owner_operator_id"]) if str(row["owner_operator_id"]) else None,
-            createdBy=str(row["created_by"]) if str(row["created_by"]) else None,
-            updatedAt=str(row["updated_at"] or row["created_at"] or now_iso()),
-            archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
-        )
-
-    def _local_task_list_record(row) -> TaskListRecord:
-        return TaskListRecord(
-            id=str(row["id"]),
-            name=str(row["name"]),
-            color=str(row["color"]),
-            sortOrder=int(row["sort_order"] or 0),
-            isDefault=bool(int(row["is_default"] or 0)),
-            scope=str(row["scope"] or "org"),
-            archivedAt=str(row["archived_at"]) if row["archived_at"] else None,
-        )
-
-    def _is_task_settings_default_local_list_row(row) -> bool:
-        if row is None:
-            return False
-        if row["archived_at"]:
-            return False
-        if str(row["scope"] or "org") != "org":
-            return False
-        normalized_name = " ".join(str(row["name"] or "").strip().split()).casefold()
-        return str(row["id"]) == "list-0" or normalized_name in {"收集箱", "收件箱", "组织任务"}
-
-    def _task_settings_default_local_destination_row():
-        rows = state.db.fetchall(
-            """
-            SELECT *
-            FROM task_lists
-            WHERE scope = 'org'
-              AND COALESCE(sandbox_id, '') = ?
-              AND (archived_at IS NULL OR archived_at = '')
-            ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
-            """
-            ,
-            active_business_sandbox_param(),
-        )
-        candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
-        if not candidates:
-            return None
-        return sorted(
-            candidates,
-            key=lambda row: (
-                0 if str(row["id"]) == "list-0" else 1 if " ".join(str(row["name"] or "").strip().split()).casefold() in {"收集箱", "收件箱"} else 2,
-                int(row["sort_order"] or 0),
-                str(row["id"]),
-            ),
-        )[0]
-
-    def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
-        if not list_id:
-            return False
-        row = state.db.fetchone(
-            "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (list_id, active_business_sandbox_id()),
-        )
-        return _is_task_settings_default_local_list_row(row)
-
-    def _local_default_list_id() -> str | None:
-        default_row = _task_settings_default_local_destination_row()
-        return str(default_row["id"]) if default_row else None
-
-    def _default_local_task_settings() -> TaskSettingsRecord:
-        return TaskSettingsRecord(
-            defaultListId=_local_default_list_id(),
-            defaultPriority="normal",
-            defaultDueDatePreset="today",
-            defaultViewMode="calendar",
-            listSortMode="manual",
-            showCompletedTasks=False,
-            defaultReviewScope="work",
-            autoAssignSelf=True,
-            updatedAt=now_iso(),
-        )
-
-    def _local_task_settings_record(row) -> TaskSettingsRecord:
-        defaults = _default_local_task_settings()
-        stored_default_list_id = str(row["default_list_id"]) if row["default_list_id"] else None
-        resolved_default_list_id = stored_default_list_id if _is_task_settings_default_local_list_id(stored_default_list_id) else defaults.defaultListId
-        return TaskSettingsRecord(
-            defaultListId=resolved_default_list_id,
-            defaultPriority=str(row["default_priority"] or defaults.defaultPriority),  # type: ignore[arg-type]
-            defaultDueDatePreset=str(row["default_due_date_preset"] or defaults.defaultDueDatePreset),  # type: ignore[arg-type]
-            defaultViewMode=str(row["default_view_mode"] or defaults.defaultViewMode),  # type: ignore[arg-type]
-            listSortMode=str(row["list_sort_mode"] or defaults.listSortMode),  # type: ignore[arg-type]
-            showCompletedTasks=_safe_bool_int(row["show_completed_tasks"], default=False),
-            defaultReviewScope=str(row["default_review_scope"] or defaults.defaultReviewScope),  # type: ignore[arg-type]
-            autoAssignSelf=_safe_bool_int(row["auto_assign_self"], default=True),
-            updatedAt=str(row["updated_at"] or defaults.updatedAt),
-        )
-
-    def _get_local_task_settings(operator_id: str | None = None) -> TaskSettingsRecord:
-        resolved_operator_id = operator_id or str(current_operator_row()["id"])
-        sandbox_id = active_business_sandbox_id()
-        row = state.db.fetchone(
-            "SELECT * FROM task_settings WHERE sandbox_id = ? AND operator_id = ?",
-            (sandbox_id, resolved_operator_id),
-        )
-        if row:
-            return _local_task_settings_record(row)
-        defaults = _default_local_task_settings()
-        state.db.execute(
-            """
-            INSERT OR REPLACE INTO task_settings(
-                sandbox_id, operator_id, default_list_id, default_priority, default_due_date_preset,
-                default_view_mode, list_sort_mode, show_completed_tasks, default_review_scope,
-                auto_assign_self, updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                sandbox_id,
-                resolved_operator_id,
-                defaults.defaultListId,
-                defaults.defaultPriority,
-                defaults.defaultDueDatePreset,
-                defaults.defaultViewMode,
-                defaults.listSortMode,
-                1 if defaults.showCompletedTasks else 0,
-                defaults.defaultReviewScope,
-                1 if defaults.autoAssignSelf else 0,
-                defaults.updatedAt,
-            ),
-        )
-        return defaults
-
-    def _visible_local_task_tag_rows(db: Database, operator_id: str) -> list:
-        return db.fetchall(
-            """
-            SELECT *
-            FROM task_tags
-            WHERE COALESCE(sandbox_id, '') = ?
-              AND (scope = 'org' OR owner_operator_id = ?)
-            ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
-                     CASE scope WHEN 'org' THEN 0 ELSE 1 END,
-                     name COLLATE NOCASE ASC
-            """,
-            (active_business_sandbox_id(), operator_id),
-        )
-
-    def _visible_local_task_tags(db: Database, operator_id: str) -> list[TaskTagRecord]:
-        return [_local_task_tag_record(row) for row in _visible_local_task_tag_rows(db, operator_id)]
-
-
-    def _visible_local_task_tag_rows(db: Database, operator_id: str) -> list:
-        return db.fetchall(
-            """
-            SELECT *
-            FROM task_tags
-            WHERE COALESCE(sandbox_id, '') = ?
-              AND (scope = 'org' OR owner_operator_id = ?)
-            ORDER BY CASE WHEN archived_at IS NULL OR archived_at = '' THEN 0 ELSE 1 END,
-                     CASE scope WHEN 'org' THEN 0 ELSE 1 END,
-                     name COLLATE NOCASE ASC
-            """,
-            (active_business_sandbox_id(), operator_id),
-        )
-
-
 def _visible_local_task_tags(db: Database, operator_id: str) -> list[TaskTagRecord]:
     return [_global_local_task_tag_record(row) for row in _visible_local_task_tag_rows(db, operator_id)]
 
@@ -2357,11 +2199,15 @@ def _sync_task_attachment_scope(
     event_line_id: str | None,
     *,
     cloud: bool,
+    attachment_scope_predicate: Callable[[str, object], bool],
+    target_scope_predicate: Callable[[str, str | None], bool],
 ) -> None:
     normalized_client_id = str(client_id or "").strip()
     if not normalized_client_id:
         return
     normalized_event_line_id = str(event_line_id or "").strip() or None
+    if not target_scope_predicate(normalized_client_id, normalized_event_line_id):
+        return
     table_name = "task_attachments_cloud" if cloud else "task_attachments"
     attachment_rows = db.fetchall(
         f"""
@@ -2375,6 +2221,11 @@ def _sync_task_attachment_scope(
         """,
         (task_id,),
     )
+    attachment_rows = [
+        row
+        for row in attachment_rows
+        if attachment_scope_predicate(table_name, row)
+    ]
     if not attachment_rows:
         return
 
@@ -2607,6 +2458,16 @@ def _sync_event_line_client_scope_records(
         return
 
     normalized_client_name = str(client_name or "").strip() or None
+    client_row = db.fetchone(
+        "SELECT sandbox_id FROM clients WHERE id = ?",
+        (normalized_client_id,),
+    )
+    client_sandbox_id = str(client_row["sandbox_id"] or "").strip() if client_row else ""
+    if not client_sandbox_id:
+        raise AsyncJobScopeError(
+            "parent_client_sandbox_missing",
+            client_id=normalized_client_id,
+        )
 
     db.execute(
         "UPDATE handbook_entries SET client_id = ? WHERE event_line_id = ?",
@@ -2629,8 +2490,15 @@ def _sync_event_line_client_scope_records(
         """,
         (normalized_client_id, updated_at, normalized_event_line_id, normalized_event_line_id),
     )
+    db.execute(
+        """
+        UPDATE analysis_jobs
+        SET client_id = ?, sandbox_id = ?, updated_at = ?
+        WHERE scope_type = 'event_line' AND scope_id = ?
+        """,
+        (normalized_client_id, client_sandbox_id, updated_at, normalized_event_line_id),
+    )
     for table_name in (
-        "analysis_jobs",
         "theme_clusters",
         "conflict_groups",
         "open_questions",
@@ -2660,8 +2528,8 @@ def _sync_event_line_client_scope_records(
     analysis_job_ids = [
         str(row["id"])
         for row in db.fetchall(
-            "SELECT id FROM analysis_jobs WHERE scope_type = 'event_line' AND scope_id = ?",
-            (normalized_event_line_id,),
+            "SELECT id FROM analysis_jobs WHERE sandbox_id = ? AND scope_type = 'event_line' AND scope_id = ?",
+            (client_sandbox_id, normalized_event_line_id),
         )
         if row["id"]
     ]
@@ -3777,7 +3645,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ),
     )
 
+    async_workspace_context: ContextVar[WorkspaceContext | None] = ContextVar(
+        "async_workspace_context",
+        default=None,
+    )
+
+    @contextmanager
+    def persisted_async_workspace_scope(workspace_context: WorkspaceContext):
+        token = async_workspace_context.set(workspace_context)
+        try:
+            with state.ai.use_sandbox(workspace_context.sandbox_id):
+                yield
+        finally:
+            async_workspace_context.reset(token)
+
     def active_business_sandbox_id() -> str:
+        worker_context = async_workspace_context.get()
+        if worker_context is not None:
+            return worker_context.sandbox_id
         return get_active_sandbox_id(state.db) or DEFAULT_LOCAL_SANDBOX_ID
 
     def active_business_sandbox_param() -> tuple[str]:
@@ -3800,6 +3685,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return f"COALESCE({alias}.sandbox_id, '') = ?"
 
     def active_workspace_organization_id() -> str:
+        worker_context = async_workspace_context.get()
+        if worker_context is not None:
+            return worker_context.organization_id
         try:
             return (get_active_sandbox(state.db).organizationId or "").strip()
         except Exception:
@@ -3879,30 +3767,253 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         safe = re.sub(r"[^A-Za-z0-9_-]+", "_", sandbox_id).strip("_")[:48] or "sandbox"
         return f"list_{safe}_inbox"
 
-    def require_client_in_active_sandbox(client_id: str):
+    def _active_workspace_context_snapshot() -> WorkspaceContext:
+        """Freeze the active workspace identity before resolving a direct-id object."""
+        return _freeze_volatile_cloud_session(
+            load_workspace_context(state.db, active_business_sandbox_id())
+        )
+
+    def _workspace_actor_name(workspace_context: WorkspaceContext) -> str:
+        session_user = workspace_context.session_user or {}
+        for key in ("fullName", "name", "email", "id"):
+            value = str(session_user.get(key) or "").strip()
+            if value:
+                return value
+        return str(current_operator_row()["name"] or "系统")
+
+    def _idempotency_scope_for_workspace(
+        workspace_context: WorkspaceContext,
+        *,
+        actor_type: object,
+        actor_id: object,
+    ) -> dict[str, str]:
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Workspace not found")
+        normalized_actor_type = (
+            str(actor_type).strip() if isinstance(actor_type, str) else "human"
+        ) or "human"
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", normalized_actor_type):
+            raise HTTPException(status_code=400, detail="Invalid X-Actor-Type")
+        explicit_actor_id = str(actor_id).strip() if isinstance(actor_id, str) else ""
+        if len(explicit_actor_id) > 200:
+            raise HTTPException(status_code=400, detail="Invalid X-Actor-Id")
+
+        # A human identity always comes from the frozen authenticated workspace;
+        # callers cannot select another user's cache by spoofing X-Actor-Id.
+        if workspace_context.user_id:
+            if normalized_actor_type == "human":
+                resolved_actor_id = workspace_context.user_id
+            else:
+                agent_id = explicit_actor_id or normalized_actor_type
+                resolved_actor_id = f"{workspace_context.user_id}:{agent_id}"
+        else:
+            resolved_actor_id = (
+                explicit_actor_id
+                or _local_session_user_id()
+                or str(current_operator_row()["id"] or "").strip()
+            )
+        if not resolved_actor_id:
+            raise HTTPException(status_code=401, detail="Actor identity required")
+        return {
+            "sandbox_id": workspace_context.sandbox_id,
+            "organization_id": (
+                workspace_context.organization_id
+                or workspace_context.session_organization_id
+            ),
+            "actor_type": normalized_actor_type,
+            "actor_id": resolved_actor_id,
+        }
+
+    def _begin_idempotent_create(
+        *,
+        idempotency_key: object,
+        method: str,
+        path: str,
+        payload: dict[str, object],
+        workspace_context: WorkspaceContext,
+        actor_type: object,
+        actor_id: object,
+    ):
+        normalized_key = (
+            str(idempotency_key).strip() if isinstance(idempotency_key, str) else ""
+        )
+        if not normalized_key:
+            return None, None, None, None, None
+        if len(normalized_key) > 255:
+            raise HTTPException(status_code=400, detail="Idempotency-Key is too long")
+        from app.services.idempotency_store import (
+            IdempotencyClaimConflictError,
+            IdempotencyKeyMismatchError,
+            get_idempotency_store,
+        )
+
+        store = get_idempotency_store(state.db)
+        scope = _idempotency_scope_for_workspace(
+            workspace_context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        try:
+            cached = store.find(
+                normalized_key,
+                method,
+                path,
+                payload=payload,
+                **scope,
+            )
+        except IdempotencyKeyMismatchError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if cached is not None:
+            if cached.status == "completed":
+                return normalized_key, store, scope, None, cached
+            if cached.status == "in_progress":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Request still in progress, retry after a brief wait",
+                )
+        try:
+            claim_token = store.start(
+                normalized_key,
+                method,
+                path,
+                payload=payload,
+                **scope,
+            )
+        except IdempotencyClaimConflictError:
+            # find()+claim is intentionally race-safe: a concurrent winner may
+            # already have completed by the time we re-read.
+            try:
+                cached = store.find(
+                    normalized_key,
+                    method,
+                    path,
+                    payload=payload,
+                    **scope,
+                )
+            except IdempotencyKeyMismatchError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            if cached is not None and cached.status == "completed":
+                return normalized_key, store, scope, None, cached
+            raise HTTPException(
+                status_code=409,
+                detail="Request still in progress, retry after a brief wait",
+            )
+        return normalized_key, store, scope, claim_token, None
+
+    def _mark_idempotent_create_failed(
+        *,
+        store,
+        idempotency_key: str | None,
+        method: str,
+        path: str,
+        scope: dict[str, str] | None,
+        claim_token: str | None,
+    ) -> None:
+        if not (store and idempotency_key and scope and claim_token):
+            return
+        try:
+            store.mark_failed(
+                idempotency_key,
+                method,
+                path,
+                claim_token=claim_token,
+                **scope,
+            )
+        except Exception:
+            logger.exception("Failed to release idempotency claim for %s %s", method, path)
+
+    def _complete_idempotent_create(
+        *,
+        store,
+        idempotency_key: str | None,
+        method: str,
+        path: str,
+        scope: dict[str, str] | None,
+        claim_token: str | None,
+        response_body: dict[str, object],
+    ) -> None:
+        if not (store and idempotency_key and scope and claim_token):
+            return
+        completed = store.complete(
+            idempotency_key,
+            method,
+            path,
+            claim_token=claim_token,
+            status=200,
+            response_body=response_body,
+            **scope,
+        )
+        if not completed:
+            logger.warning("Idempotency claim expired before completion for %s %s", method, path)
+
+    def _workspace_claim_is_valid(workspace_context: WorkspaceContext) -> bool:
+        if workspace_context.kind == "missing":
+            return False
+        # An organization workspace may exist before its first authenticated cloud
+        # binding.  In that state sandbox_id remains the authoritative local boundary;
+        # once both claims exist they must agree before any direct-id access proceeds.
+        return workspace_context.session_matches_workspace
+
+    def require_client_in_workspace(client_id: str, workspace_context: WorkspaceContext):
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Client not found")
         row = state.db.fetchone(
-            "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (client_id, active_business_sandbox_id()),
+            """
+            SELECT c.*
+            FROM clients c
+            JOIN sandboxes s ON s.id = c.sandbox_id
+            WHERE (c.id = ? OR c.cloud_id = ?)
+              AND COALESCE(c.sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+            """,
+            (
+                client_id,
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         if not row:
             raise HTTPException(status_code=404, detail="Client not found")
         return row
 
-    def require_task_in_active_sandbox(task_id: str):
+    def require_client_in_active_sandbox(client_id: str):
+        return require_client_in_workspace(client_id, _active_workspace_context_snapshot())
+
+    def require_task_in_workspace(task_id: str, workspace_context: WorkspaceContext):
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Task not found")
         row = state.db.fetchone(
             """
-            SELECT *
-            FROM tasks
-            WHERE (id = ? OR cloud_id = ?)
-              AND COALESCE(sandbox_id, '') = ?
-            ORDER BY updated_at DESC
+            SELECT t.*
+            FROM tasks t
+            JOIN sandboxes s ON s.id = t.sandbox_id
+            WHERE (t.id = ? OR t.cloud_id = ?)
+              AND COALESCE(t.sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+              AND (? = '' OR COALESCE(t.organization_id, '') IN ('', ?))
+            ORDER BY t.updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id, active_business_sandbox_id()),
+            (
+                task_id,
+                task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         if not row:
             raise HTTPException(status_code=404, detail="Task not found")
         return row
+
+    def require_task_in_active_sandbox(task_id: str):
+        return require_task_in_workspace(task_id, _active_workspace_context_snapshot())
 
     def require_event_line_in_active_sandbox(event_line_id: str):
         row = state.db.fetchone(
@@ -4777,7 +4888,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_name = " ".join(str(row["name"] or "").strip().split()).casefold()
         return str(row["id"]) == "list-0" or normalized_name in {"收集箱", "收件箱", "组织任务"}
 
-    def _task_settings_default_local_destination_row():
+    def _task_settings_default_local_destination_row(sandbox_id: str | None = None):
+        resolved_sandbox_id = sandbox_id or active_business_sandbox_id()
         rows = state.db.fetchall(
             """
             SELECT *
@@ -4787,7 +4899,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
               AND (archived_at IS NULL OR archived_at = '')
             ORDER BY sort_order ASC, name COLLATE NOCASE ASC, id ASC
             """,
-            active_business_sandbox_param(),
+            (resolved_sandbox_id,),
         )
         candidates = [row for row in rows if _is_task_settings_default_local_list_row(row)]
         if not candidates:
@@ -4801,22 +4913,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )[0]
 
-    def _is_task_settings_default_local_list_id(list_id: str | None) -> bool:
+    def _is_task_settings_default_local_list_id(
+        list_id: str | None,
+        sandbox_id: str | None = None,
+    ) -> bool:
         if not list_id:
             return False
         row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (list_id, active_business_sandbox_id()),
+            (list_id, sandbox_id or active_business_sandbox_id()),
         )
         return _is_task_settings_default_local_list_row(row)
 
-    def _local_default_list_id() -> str | None:
-        default_row = _task_settings_default_local_destination_row()
+    def _local_default_list_id(sandbox_id: str | None = None) -> str | None:
+        default_row = _task_settings_default_local_destination_row(sandbox_id)
         return str(default_row["id"]) if default_row else None
 
-    def _default_local_task_settings() -> TaskSettingsRecord:
+    def _default_local_task_settings(sandbox_id: str | None = None) -> TaskSettingsRecord:
         return TaskSettingsRecord(
-            defaultListId=_local_default_list_id(),
+            defaultListId=_local_default_list_id(sandbox_id),
             defaultPriority="normal",
             defaultDueDatePreset="today",
             defaultViewMode="calendar",
@@ -4827,10 +4942,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=now_iso(),
         )
 
-    def _local_task_settings_record(row) -> TaskSettingsRecord:
-        defaults = _default_local_task_settings()
+    def _local_task_settings_record(
+        row,
+        *,
+        sandbox_id: str | None = None,
+    ) -> TaskSettingsRecord:
+        defaults = _default_local_task_settings(sandbox_id)
         stored_default_list_id = str(row["default_list_id"]) if row["default_list_id"] else None
-        resolved_default_list_id = stored_default_list_id if _is_task_settings_default_local_list_id(stored_default_list_id) else defaults.defaultListId
+        resolved_default_list_id = stored_default_list_id if _is_task_settings_default_local_list_id(stored_default_list_id, sandbox_id) else defaults.defaultListId
         return TaskSettingsRecord(
             defaultListId=resolved_default_list_id,
             defaultPriority=str(row["default_priority"] or defaults.defaultPriority),  # type: ignore[arg-type]
@@ -4843,16 +4962,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             updatedAt=str(row["updated_at"] or defaults.updatedAt),
         )
 
-    def _get_local_task_settings(operator_id: str | None = None) -> TaskSettingsRecord:
+    def _get_local_task_settings(
+        operator_id: str | None = None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> TaskSettingsRecord:
         resolved_operator_id = operator_id or str(current_operator_row()["id"])
-        sandbox_id = active_business_sandbox_id()
+        resolved_sandbox_id = sandbox_id or active_business_sandbox_id()
         row = state.db.fetchone(
             "SELECT * FROM task_settings WHERE sandbox_id = ? AND operator_id = ?",
-            (sandbox_id, resolved_operator_id),
+            (resolved_sandbox_id, resolved_operator_id),
         )
         if row:
-            return _local_task_settings_record(row)
-        defaults = _default_local_task_settings()
+            return _local_task_settings_record(row, sandbox_id=resolved_sandbox_id)
+        defaults = _default_local_task_settings(resolved_sandbox_id)
         state.db.execute(
             """
             INSERT OR REPLACE INTO task_settings(
@@ -4862,7 +4985,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                sandbox_id,
+                resolved_sandbox_id,
                 resolved_operator_id,
                 defaults.defaultListId,
                 defaults.defaultPriority,
@@ -4971,9 +5094,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return []
         return [_ensure_local_tag(db, operator_id, name, "org") for name in legacy_names if name.strip()]
 
-    def log_activity(action: str, entity_type: str, entity_id: str, detail: dict[str, object]) -> None:
-        session_user = get_cached_session_user()
-        actor_name = session_user.fullName if session_user else current_operator_row()["name"]
+    def log_activity(
+        action: str,
+        entity_type: str,
+        entity_id: str,
+        detail: dict[str, object],
+        *,
+        actor_name: str | None = None,
+    ) -> None:
+        if actor_name is None:
+            session_user = get_cached_session_user()
+            actor_name = session_user.fullName if session_user else current_operator_row()["name"]
         state.db.execute(
             """
             INSERT INTO activity_logs(id, actor_name, action, entity_type, entity_id, detail_json, created_at)
@@ -4994,22 +5125,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def enqueue_knowledge_job(client_id: str, job_type: str, payload: dict[str, object], total_items: int) -> KnowledgeJobRecord:
+        workspace_context = resolve_client_workspace_context(state.db, client_id)
         job_id = new_id("kjob")
         timestamp = now_iso()
         state.db.execute(
             """
             INSERT INTO knowledge_jobs(
-                id, client_id, job_type, status, payload_json, total_items, processed_items,
+                id, client_id, sandbox_id, job_type, status, payload_json, total_items, processed_items,
                 last_error, created_at, started_at, finished_at, updated_at
             )
-            VALUES(?, ?, ?, 'queued', ?, ?, 0, NULL, ?, NULL, NULL, ?)
+            VALUES(?, ?, ?, ?, 'queued', ?, ?, 0, NULL, ?, NULL, NULL, ?)
             """,
-            (job_id, client_id, job_type, to_json(payload), total_items, timestamp, timestamp),
+            (
+                job_id,
+                client_id,
+                workspace_context.sandbox_id,
+                job_type,
+                to_json(payload),
+                total_items,
+                timestamp,
+                timestamp,
+            ),
         )
         append_knowledge_job_event(job_id, "info", "知识加工任务已入队", {"jobType": job_type, "totalItems": total_items})
         return KnowledgeJobRecord(
             id=job_id,
             clientId=client_id,
+            sandboxId=workspace_context.sandbox_id,
             jobType=job_type,
             status="queued",
             totalItems=total_items,
@@ -5045,7 +5187,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def recover_stale_knowledge_jobs() -> None:
         stale_rows = state.db.fetchall(
             """
-            SELECT id
+            SELECT id, client_id, sandbox_id
             FROM knowledge_jobs
             WHERE status = 'running'
             ORDER BY
@@ -5063,13 +5205,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         timestamp = now_iso()
         for row in stale_rows:
             job_id = str(row["id"])
+            job_sandbox_id = str(row["sandbox_id"] or "")
+            try:
+                load_persisted_job_workspace_context(
+                    state.db,
+                    sandbox_id=job_sandbox_id,
+                    client_id=str(row["client_id"] or ""),
+                )
+            except AsyncJobScopeError as error:
+                state.db.execute(
+                    """
+                    UPDATE knowledge_jobs
+                    SET status = 'failed', finished_at = ?, last_error = ?, updated_at = ?
+                    WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                    """,
+                    (timestamp, str(error), timestamp, job_id, job_sandbox_id),
+                )
+                append_knowledge_job_event(job_id, "error", "旧任务工作空间无效，已终止", {"error": str(error)})
+                continue
             state.db.execute(
                 """
                 UPDATE knowledge_jobs
                 SET status = 'queued', started_at = NULL, finished_at = NULL, last_error = ?, updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND sandbox_id = ?
                 """,
-                ("worker_restart_requeued", timestamp, job_id),
+                ("worker_restart_requeued", timestamp, job_id, job_sandbox_id),
             )
             append_knowledge_job_event(job_id, "warning", "检测到旧的运行中任务，已在启动时重新入队")
 
@@ -5553,54 +5713,113 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return recovered
 
     def claim_next_knowledge_job() -> dict[str, object] | None:
-        row = state.db.fetchone(
-            """
-            SELECT *
-            FROM knowledge_jobs
-            WHERE status = 'queued'
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-        )
-        if not row:
-            return None
         timestamp = now_iso()
-        state.db.execute(
-            "UPDATE knowledge_jobs SET status = 'running', started_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'",
-            (timestamp, timestamp, str(row["id"])),
+
+        def _claim(conn) -> tuple[str, str] | None:
+            row = conn.execute(
+                """
+                SELECT id, sandbox_id
+                FROM knowledge_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if not row:
+                return None
+            job_id = str(row["id"])
+            job_sandbox_id = str(row["sandbox_id"] or "")
+            updated = conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = 'running', started_at = ?, updated_at = ?
+                WHERE id = ? AND COALESCE(sandbox_id, '') = ? AND status = 'queued'
+                """,
+                (timestamp, timestamp, job_id, job_sandbox_id),
+            )
+            return (job_id, job_sandbox_id) if updated.rowcount == 1 else None
+
+        claimed_scope = state.db.run_in_transaction(_claim)
+        if not claimed_scope:
+            return None
+        claimed_job_id, claimed_sandbox_id = claimed_scope
+        claimed = state.db.fetchone(
+            "SELECT * FROM knowledge_jobs WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+            (claimed_job_id, claimed_sandbox_id),
         )
-        claimed = state.db.fetchone("SELECT * FROM knowledge_jobs WHERE id = ?", (str(row["id"]),))
         if not claimed or str(claimed["status"]) != "running":
             return None
         append_knowledge_job_event(str(claimed["id"]), "info", "知识加工任务开始执行")
         return dict(claimed)
 
-    def finish_knowledge_job(job_id: str, *, status: str, processed_items: int, last_error: str | None = None) -> None:
+    def finish_knowledge_job(
+        job_id: str,
+        *,
+        status: str,
+        processed_items: int,
+        last_error: str | None = None,
+        expected_sandbox_id: str | None = None,
+    ) -> None:
         timestamp = now_iso()
-        existing_job = state.db.fetchone("SELECT * FROM knowledge_jobs WHERE id = ?", (job_id,))
-        state.db.execute(
-            """
-            UPDATE knowledge_jobs
-            SET status = ?, processed_items = ?, last_error = ?, finished_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (status, processed_items, last_error, timestamp, timestamp, job_id),
+        expected_scope = (
+            active_business_sandbox_id()
+            if expected_sandbox_id is None
+            else str(expected_sandbox_id or "").strip()
         )
+
+        def _finish(conn) -> dict[str, object]:
+            existing = conn.execute(
+                "SELECT * FROM knowledge_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if existing is None:
+                raise AsyncJobScopeError("job_not_found", client_id="", sandbox_id="")
+            job_sandbox_id = str(existing["sandbox_id"] or "")
+            if job_sandbox_id != expected_scope:
+                raise AsyncJobScopeError(
+                    "job_scope_changed",
+                    client_id=str(existing["client_id"] or ""),
+                    sandbox_id=expected_scope,
+                )
+            updated = conn.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = ?, processed_items = ?, last_error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                """,
+                (status, processed_items, last_error, timestamp, timestamp, job_id, expected_scope),
+            )
+            if updated.rowcount != 1:
+                raise AsyncJobScopeError(
+                    "job_scope_changed",
+                    client_id=str(existing["client_id"] or ""),
+                    sandbox_id=expected_scope,
+                )
+            return dict(existing)
+
+        existing_job = state.db.run_in_transaction(_finish)
         append_knowledge_job_event(
             job_id,
             "error" if status == "failed" else "info",
             "知识加工任务执行失败" if status == "failed" else "知识加工任务执行完成",
             {"processedItems": processed_items, "lastError": last_error},
         )
-        import_id = resolve_import_id_for_job(dict(existing_job)) if existing_job else None
+        import_id = resolve_import_id_for_job(dict(existing_job))
         if import_id:
             update_import_status(import_id, status="failed" if status == "failed" else "completed", imported_count=processed_items)
 
     def update_knowledge_job_progress(job_id: str, processed_items: int, message: str) -> None:
-        state.db.execute(
-            "UPDATE knowledge_jobs SET processed_items = ?, updated_at = ? WHERE id = ?",
-            (processed_items, now_iso(), job_id),
-        )
+        job_sandbox_id = active_business_sandbox_id()
+
+        def _update(conn) -> int:
+            updated = conn.execute(
+                "UPDATE knowledge_jobs SET processed_items = ?, updated_at = ? WHERE id = ? AND sandbox_id = ?",
+                (processed_items, now_iso(), job_id, job_sandbox_id),
+            )
+            return int(updated.rowcount or 0)
+
+        if state.db.run_in_transaction(_update) != 1:
+            raise AsyncJobScopeError("job_scope_changed", client_id="", sandbox_id=job_sandbox_id)
         append_knowledge_job_event(job_id, "info", message, {"processedItems": processed_items})
 
     def _apply_version_chain(
@@ -5645,10 +5864,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def process_knowledge_job(job: dict[str, object]) -> None:
         job_id = str(job["id"])
         client_id = str(job["client_id"])
+        workspace_context = async_workspace_context.get()
+        if workspace_context is None:
+            raise AsyncJobScopeError(
+                "worker_context_not_bound",
+                client_id=client_id,
+                sandbox_id=str(job.get("sandbox_id") or ""),
+            )
         job_type = str(job["job_type"])
         payload = from_json(str(job["payload_json"]), {})
         processed_items = 0
         if job_type == "ingest_import":
+            from app.services.knowledge_v2 import _resolve_team_context_for_async_worker
+
+            team_context = _resolve_team_context_for_async_worker(
+                state.db,
+                workspace_context,
+            )
+            scoped_cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+
+            def persisted_cloud_request(
+                method: str,
+                path: str,
+                *,
+                json_body: dict | None = None,
+                timeout: float = 6.0,
+            ) -> object:
+                if scoped_cloud_context is None:
+                    raise RuntimeError("scoped_cloud_context_unavailable")
+                return scoped_cloud_request(
+                    scoped_cloud_context,
+                    method,
+                    path,
+                    json_body=json_body,
+                    timeout=timeout,
+                )
+
             import_id = str(payload.get("importId"))
             documents = payload.get("documents", [])
             docs = documents if isinstance(documents, list) else []
@@ -5678,8 +5929,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 try:
                     excerpt = build_excerpt(path)
                     # V2.3 Step 1 · 取 team context (org_id/owner/dept), 让 raw_file 接 source_registry
-                    from app.services.knowledge_v2 import _resolve_team_context_for_async_worker
-                    _team_ctx = _resolve_team_context_for_async_worker(state.db)
                     prepared = ingest_document_knowledge(
                         state.db,
                         data_dir=state.data_dir,
@@ -5694,12 +5943,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         fallback_excerpt=excerpt,
                         created_at=str(item.get("createdAt", now_iso())),
                         ai_service=state.ai,
-                        organization_id=_team_ctx.get("organization_id", ""),
-                        owner_user_id=_team_ctx.get("owner_user_id", ""),
-                        department_id=_team_ctx.get("department_id", ""),
-                        visibility_scope=_team_ctx.get("visibility_scope", "project_public"),
+                        organization_id=team_context.get("organization_id", ""),
+                        owner_user_id=team_context.get("owner_user_id", ""),
+                        department_id=team_context.get("department_id", ""),
+                        visibility_scope=team_context.get("visibility_scope", "project_public"),
                         # V2.3 PULL · 传 cloud_request 闭包让 ingest 在 OCR 前查云端复用
-                        cloud_request=cloud_request,
+                        cloud_request=persisted_cloud_request if scoped_cloud_context is not None else None,
                     )
                     # 迭代 2 F3：回写版本链元数据。
                     # ingest 已创建/更新了 knowledge_documents 行（按 document_id 查），
@@ -5806,8 +6055,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _run_workspace_document_auto_repair_job(client_id, payload if isinstance(payload, dict) else {}, job_id)
             processed_items = int(
                 state.db.scalar(
-                    "SELECT processed_items FROM knowledge_jobs WHERE id = ?",
-                    (job_id,),
+                    "SELECT processed_items FROM knowledge_jobs WHERE id = ? AND sandbox_id = ?",
+                    (job_id, workspace_context.sandbox_id),
                 )
                 or 0
             )
@@ -5950,9 +6199,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 time.sleep(0.5)
                 continue
             try:
-                process_knowledge_job(job)
+                workspace_context = load_persisted_job_workspace_context(
+                    state.db,
+                    sandbox_id=str(job.get("sandbox_id") or ""),
+                    client_id=str(job.get("client_id") or ""),
+                )
+                with persisted_async_workspace_scope(workspace_context):
+                    process_knowledge_job(job)
             except Exception as error:
-                finish_knowledge_job(str(job["id"]), status="failed", processed_items=int(job.get("processed_items") or 0), last_error=str(error))
+                try:
+                    finish_knowledge_job(
+                        str(job["id"]),
+                        status="failed",
+                        processed_items=int(job.get("processed_items") or 0),
+                        last_error=str(error),
+                        expected_sandbox_id=str(job.get("sandbox_id") or ""),
+                    )
+                except Exception:
+                    logger.exception(
+                        "知识加工任务失败态写回被拒绝 job_id=%s sandbox_id=%s",
+                        job.get("id"),
+                        job.get("sandbox_id"),
+                    )
             time.sleep(0.05)
 
     def analysis_job_worker_loop() -> None:
@@ -5963,21 +6231,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 time.sleep(0.75)
                 continue
             try:
-                workspace = workspace_for_client(job.clientId)
-                execute_analysis_job_projection(
+                workspace_context = load_persisted_job_workspace_context(
                     state.db,
-                    job,
-                    workspace,
-                    notebook_summary=workspace.notebookSummary,
-                    memory_status=workspace.memoryStatus,
+                    sandbox_id=job.sandboxId,
+                    client_id=job.clientId,
                 )
+                with persisted_async_workspace_scope(workspace_context):
+                    workspace = workspace_for_client(job.clientId)
+                    execute_analysis_job_projection(
+                        state.db,
+                        job,
+                        workspace,
+                        notebook_summary=workspace.notebookSummary,
+                        memory_status=workspace.memoryStatus,
+                    )
             except Exception as error:
-                fail_analysis_job(
-                    state.db,
-                    job.id,
-                    stage_name="analysis_pipeline",
-                    error=str(error),
-                )
+                try:
+                    fail_analysis_job(
+                        state.db,
+                        job.id,
+                        stage_name="analysis_pipeline",
+                        error=str(error),
+                        retryable=not isinstance(error, AsyncJobScopeError),
+                        expected_sandbox_id=str(job.sandboxId or ""),
+                    )
+                except Exception:
+                    logger.exception(
+                        "分析任务失败态写回被拒绝 job_id=%s sandbox_id=%s",
+                        job.id,
+                        job.sandboxId,
+                    )
             time.sleep(0.05)
 
     def build_health(*, lightweight: bool = False) -> HealthResponse:
@@ -6090,17 +6373,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def _has_persisted_cloud_session() -> bool:
+        sandbox_id = get_active_sandbox_id(state.db)
         return bool(
-            get_active_sandbox_setting(state.db, "cloud_access_token", "")
-            or get_active_sandbox_setting(state.db, "cloud_refresh_token", "")
+            get_sandbox_setting(state.db, sandbox_id, "cloud_access_token", "")
+            or get_sandbox_setting(state.db, sandbox_id, "cloud_refresh_token", "")
         )
 
     def _active_volatile_cloud_session() -> dict[str, str]:
         active_id = get_active_sandbox_id(state.db)
         return state.volatile_cloud_sessions.setdefault(active_id, {})
 
-    def _active_organization_workspace_context() -> tuple[str, str, str, str]:
-        sandbox_id = get_active_sandbox_id(state.db)
+    def _active_organization_workspace_context(
+        sandbox_id: str | None = None,
+    ) -> tuple[str, str, str, str]:
+        # Callers doing multi-step credential work pass the sandbox captured at
+        # operation start.  Re-reading the global active sandbox between the
+        # credential read and organization check creates a cross-workspace
+        # TOCTOU race when a background thread overlaps a workspace switch.
+        sandbox_id = str(sandbox_id or get_active_sandbox_id(state.db)).strip()
         row = state.db.fetchone(
             "SELECT kind, name, organization_id, organization_name FROM sandboxes WHERE id = ?",
             (sandbox_id,),
@@ -6120,57 +6410,95 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         parsed = from_json(raw, {})
         return str(parsed.get("organizationId") or "").strip() if isinstance(parsed, dict) else ""
 
-    def _active_session_matches_workspace(raw: str | None) -> bool:
-        _, active_org_id, _, _ = _active_organization_workspace_context()
-        if not active_org_id:
+    def _active_session_matches_workspace(
+        raw: str | None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> bool:
+        target_sandbox_id = str(sandbox_id or get_active_sandbox_id(state.db)).strip()
+        workspace_row = state.db.fetchone(
+            "SELECT kind, organization_id FROM sandboxes WHERE id = ?",
+            (target_sandbox_id,),
+        )
+        if not workspace_row or str(workspace_row["kind"] or "") != "organization":
             return True
+        active_org_id = str(workspace_row["organization_id"] or "").strip()
         session_org_id = _session_user_org_from_raw(raw)
-        return not session_org_id or session_org_id == active_org_id
+        return bool(active_org_id) and bool(session_org_id) and session_org_id == active_org_id
 
-    def _clear_mismatched_active_cloud_session(raw: str | None, *, reason: str) -> bool:
-        if _active_session_matches_workspace(raw):
+    def _clear_mismatched_active_cloud_session(
+        raw: str | None,
+        *,
+        reason: str,
+        sandbox_id: str | None = None,
+    ) -> bool:
+        target_sandbox_id = str(sandbox_id or get_active_sandbox_id(state.db)).strip()
+        if _active_session_matches_workspace(raw, sandbox_id=target_sandbox_id):
             return False
-        sandbox_id, active_org_id, active_org_name, _ = _active_organization_workspace_context()
+        _, active_org_id, active_org_name, _ = _active_organization_workspace_context(
+            target_sandbox_id
+        )
         session_org_id = _session_user_org_from_raw(raw)
         logger.warning(
             "[workspace-session] clearing mismatched cloud session: sandbox=%s org=%s sessionOrg=%s reason=%s",
-            sandbox_id,
+            target_sandbox_id,
             active_org_id or active_org_name,
             session_org_id,
             reason,
         )
-        clear_active_cloud_session(state.db)
-        state.volatile_cloud_sessions.pop(sandbox_id, None)
-        state.volatile_cloud_access_token = ""
-        state.volatile_cloud_refresh_token = ""
-        state.volatile_cloud_session_user_json = ""
-        state.cloud_session_persistent = False
+        # Clear exactly the sandbox whose credentials were read.  Calling the
+        # active-sandbox helper here can erase a newly activated workspace if
+        # the switch happens between validation and cleanup.
+        for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user"):
+            set_sandbox_setting(state.db, target_sandbox_id, key, "")
+        state.volatile_cloud_sessions.pop(target_sandbox_id, None)
+        if target_sandbox_id == get_active_sandbox_id(state.db):
+            state.volatile_cloud_access_token = ""
+            state.volatile_cloud_refresh_token = ""
+            state.volatile_cloud_session_user_json = ""
+            state.cloud_session_persistent = False
         return True
 
     def get_cloud_token() -> str:
-        raw_session = get_active_sandbox_setting(state.db, "cloud_session_user", "")
-        if raw_session and _clear_mismatched_active_cloud_session(raw_session, reason="get_cloud_token"):
+        sandbox_id = get_active_sandbox_id(state.db)
+        raw_session = get_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
+        token = get_sandbox_setting(state.db, sandbox_id, "cloud_access_token", "")
+        if (raw_session or token) and _clear_mismatched_active_cloud_session(
+            raw_session,
+            reason="get_cloud_token",
+            sandbox_id=sandbox_id,
+        ):
             return ""
-        token = get_active_sandbox_setting(state.db, "cloud_access_token", "")
         if token:
             state.cloud_session_persistent = True
             return token
-        volatile = _active_volatile_cloud_session()
-        if not _active_session_matches_workspace(volatile.get("cloud_session_user", "")):
+        volatile = state.volatile_cloud_sessions.setdefault(sandbox_id, {})
+        if not _active_session_matches_workspace(
+            volatile.get("cloud_session_user", ""),
+            sandbox_id=sandbox_id,
+        ):
             volatile.clear()
             return ""
         return volatile.get("cloud_access_token", "")
 
     def get_cloud_refresh_token() -> str:
-        raw_session = get_active_sandbox_setting(state.db, "cloud_session_user", "")
-        if raw_session and _clear_mismatched_active_cloud_session(raw_session, reason="get_cloud_refresh_token"):
+        sandbox_id = get_active_sandbox_id(state.db)
+        raw_session = get_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
+        token = get_sandbox_setting(state.db, sandbox_id, "cloud_refresh_token", "")
+        if (raw_session or token) and _clear_mismatched_active_cloud_session(
+            raw_session,
+            reason="get_cloud_refresh_token",
+            sandbox_id=sandbox_id,
+        ):
             return ""
-        token = get_active_sandbox_setting(state.db, "cloud_refresh_token", "")
         if token:
             state.cloud_session_persistent = True
             return token
-        volatile = _active_volatile_cloud_session()
-        if not _active_session_matches_workspace(volatile.get("cloud_session_user", "")):
+        volatile = state.volatile_cloud_sessions.setdefault(sandbox_id, {})
+        if not _active_session_matches_workspace(
+            volatile.get("cloud_session_user", ""),
+            sandbox_id=sandbox_id,
+        ):
             volatile.clear()
             return ""
         return volatile.get("cloud_refresh_token", "")
@@ -6256,11 +6584,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as error:
             logger.warning("[CLIENT-CANONICAL] workspace duplicate shell repair skipped: %s", error)
         state.ai.reset_last_model_snapshot()
-        try:
-            _cloud_object_storage_sync_status.clear()
-            _cloud_object_storage_sync_status.update({"state": "never"})
-        except NameError:
-            pass
         with state.maintenance_mode_lock:
             state.maintenance_mode_active = False
             state.maintenance_mode_user_id = ""
@@ -6447,16 +6770,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
 
     def get_cached_session_user() -> SessionUserRecord | None:
-        raw = get_active_sandbox_setting(state.db, "cloud_session_user", "")
-        if raw and _clear_mismatched_active_cloud_session(raw, reason="get_cached_session_user"):
+        sandbox_id = get_active_sandbox_id(state.db)
+        raw = get_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
+        if raw and _clear_mismatched_active_cloud_session(
+            raw,
+            reason="get_cached_session_user",
+            sandbox_id=sandbox_id,
+        ):
             return None
         if not raw:
             raw = (
-                _active_volatile_cloud_session().get("cloud_session_user", "")
+                state.volatile_cloud_sessions.setdefault(sandbox_id, {}).get("cloud_session_user", "")
                 or state.volatile_cloud_session_user_json
-                or get_active_sandbox_setting(state.db, "cloud_session_user_snapshot", "")
+                or get_sandbox_setting(state.db, sandbox_id, "cloud_session_user_snapshot", "")
             )
-        if raw and not _active_session_matches_workspace(raw):
+        if raw and not _active_session_matches_workspace(raw, sandbox_id=sandbox_id):
             return None
         parsed = from_json(raw, {}) if raw else {}
         if not isinstance(parsed, dict) or not parsed:
@@ -8760,18 +9088,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         target_modules = resolve_client_dna_modules_for_generation(client_id, refresh_generated=refresh_generated)
         if not target_modules:
             return None
+        workspace_context = resolve_client_workspace_context(state.db, client_id)
         pending = state.db.fetchone(
             """
             SELECT * FROM knowledge_jobs
-            WHERE client_id = ? AND job_type = 'generate_client_dna_candidates' AND status IN ('queued', 'running')
+            WHERE sandbox_id = ? AND client_id = ? AND job_type = 'generate_client_dna_candidates' AND status IN ('queued', 'running')
             ORDER BY created_at DESC LIMIT 1
             """,
-            (client_id,),
+            (workspace_context.sandbox_id, client_id),
         )
         if pending:
             return KnowledgeJobRecord(
                 id=str(pending["id"]),
                 clientId=str(pending["client_id"]),
+                sandboxId=str(pending["sandbox_id"]) if pending["sandbox_id"] else None,
                 jobType=str(pending["job_type"]),
                 status=str(pending["status"]),  # type: ignore[arg-type]
                 totalItems=int(pending["total_items"]),
@@ -9176,34 +9506,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _normalize_task_client_and_event_line_refs(
         client_id: str | None,
         event_line_id: str | None,
+        *,
+        workspace_context: WorkspaceContext,
+        cloud_context: ScopedCloudContext | None,
     ) -> tuple[str | None, str | None]:
         normalized_client_id = (client_id or "").strip() or None
         normalized_event_line_id = (event_line_id or "").strip() or None
+        if normalized_client_id:
+            require_client_in_workspace(normalized_client_id, workspace_context)
         if not normalized_event_line_id:
             return normalized_client_id, None
-        active_sandbox_id = active_business_sandbox_id()
-        event_line_row = state.db.fetchone(
-            """
-            SELECT id, primary_client_id
-            FROM event_lines
-            WHERE (id = ? OR cloud_id = ?)
-              AND COALESCE(sandbox_id, '') = ?
-            """,
-            (normalized_event_line_id, normalized_event_line_id, active_sandbox_id),
-        )
-        if not event_line_row and get_cloud_token():
+        try:
+            event_line_row = _event_line_in_workspace(
+                normalized_event_line_id,
+                workspace_context,
+            )
+        except HTTPException:
+            event_line_row = None
+        if not event_line_row and cloud_context is not None:
             try:
-                cloud_el = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
-                local_event_line_id = _upsert_cloud_event_line_shadow_local(cloud_el, target_sandbox_id=active_sandbox_id)
+                cloud_el = scoped_cloud_request(
+                    cloud_context,
+                    "GET",
+                    f"/api/v1/event-lines/{normalized_event_line_id}",
+                )
+                local_event_line_id = _upsert_cloud_event_line_shadow_local(
+                    cloud_el,
+                    target_sandbox_id=workspace_context.sandbox_id,
+                )
                 if local_event_line_id:
-                    event_line_row = state.db.fetchone(
-                        """
-                        SELECT id, primary_client_id
-                        FROM event_lines
-                        WHERE id = ?
-                          AND COALESCE(sandbox_id, '') = ?
-                        """,
-                        (local_event_line_id, active_sandbox_id),
+                    event_line_row = _event_line_in_workspace(
+                        local_event_line_id,
+                        workspace_context,
                     )
             except Exception:
                 pass
@@ -9214,6 +9548,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if event_line_row["primary_client_id"]
             else None
         )
+        if event_line_client_id:
+            require_client_in_workspace(event_line_client_id, workspace_context)
         if event_line_client_id and normalized_client_id != event_line_client_id:
             normalized_client_id = event_line_client_id
         return normalized_client_id, str(event_line_row["id"])
@@ -9647,51 +9983,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail=f"{context}失败：{detail}") from exc
 
     def refresh_cloud_session() -> SessionUserRecord:
-        refresh_token = get_cloud_refresh_token()
-        if not refresh_token:
+        context = _capture_active_scoped_cloud_context()
+        if context is None or not context.refresh_token:
             raise HTTPException(status_code=401, detail="登录状态已过期，请重新登录")
-        persist_session = state.cloud_session_persistent or _has_persisted_cloud_session()
-        try:
-            try:
-                response = httpx.request(
-                    "POST",
-                    f"{cloud_api_base_url()}/api/v1/auth/refresh",
-                    json={"refreshToken": refresh_token},
-                    timeout=20.0,
-                    trust_env=False,
-                )
-            except TypeError as exc:
-                if "trust_env" not in str(exc):
-                    raise
-                response = httpx.request(
-                    "POST",
-                    f"{cloud_api_base_url()}/api/v1/auth/refresh",
-                    json={"refreshToken": refresh_token},
-                    timeout=20.0,
-                )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
-        if 300 <= response.status_code < 400:
-            raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
-        if response.status_code >= 400:
-            detail = _cloud_error_detail_from_response(response)
-            if response.status_code in {401, 403}:
-                clear_cloud_session()
-            raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        payload = _cloud_json_payload(response, context="刷新云端登录状态")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid cloud refresh payload")
-        token = str(payload.get("accessToken", ""))
-        next_refresh_token = str(payload.get("refreshToken", ""))
-        user_payload = payload.get("user")
-        if not token or not next_refresh_token or not isinstance(user_payload, dict):
-            raise HTTPException(status_code=502, detail="Cloud refresh payload missing session data")
-        user = SessionUserRecord(**user_payload)
-        set_cloud_session(token, user, persist=persist_session)
-        set_cloud_refresh_token(next_refresh_token, persist=persist_session)
-        sync_context = _capture_active_scoped_cloud_context()
+        # The context freezes sandbox, URL, organization and refresh token at
+        # entry.  A concurrent workspace switch cannot redirect the credential
+        # or cause the refreshed session to be written into another sandbox.
+        user = _refresh_scoped_cloud_session(context)
         Thread(
-            target=lambda: _sync_org_ai_config_from_cloud(user, context=sync_context),
+            target=lambda: _sync_org_ai_config_from_cloud(user, context=context),
             daemon=True,
             name="cloud-ai-sync-refresh",
         ).start()
@@ -9702,23 +10002,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # does not make another organization's Feishu/AI/feedback links look down.
     _cloud_circuit_breakers: dict[str, float] = {}
 
-    def _cloud_circuit_breaker_key(base_url: str | None = None) -> str:
-        try:
-            sandbox_id = get_active_sandbox_id(state.db) or DEFAULT_LOCAL_SANDBOX_ID
-        except Exception:
-            sandbox_id = DEFAULT_LOCAL_SANDBOX_ID
+    def _cloud_circuit_breaker_key(
+        base_url: str | None = None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> str:
+        if sandbox_id is None:
+            try:
+                sandbox_id = get_active_sandbox_id(state.db) or DEFAULT_LOCAL_SANDBOX_ID
+            except Exception:
+                sandbox_id = DEFAULT_LOCAL_SANDBOX_ID
         normalized_base = str(base_url or state.cloud_api_url or "").strip()
         return f"{sandbox_id}|{normalized_base}"
 
-    def _cloud_circuit_last_failure(base_url: str | None = None) -> float:
-        return float(_cloud_circuit_breakers.get(_cloud_circuit_breaker_key(base_url), 0.0) or 0.0)
+    def _cloud_circuit_last_failure(
+        base_url: str | None = None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> float:
+        return float(
+            _cloud_circuit_breakers.get(
+                _cloud_circuit_breaker_key(base_url, sandbox_id=sandbox_id),
+                0.0,
+            )
+            or 0.0
+        )
 
-    def _mark_cloud_circuit_breaker_failure(base_url: str | None = None) -> None:
+    def _mark_cloud_circuit_breaker_failure(
+        base_url: str | None = None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> None:
         import time as _time
-        _cloud_circuit_breakers[_cloud_circuit_breaker_key(base_url)] = _time.time()
+        _cloud_circuit_breakers[
+            _cloud_circuit_breaker_key(base_url, sandbox_id=sandbox_id)
+        ] = _time.time()
 
-    def _clear_cloud_circuit_breaker(base_url: str | None = None) -> None:
-        _cloud_circuit_breakers.pop(_cloud_circuit_breaker_key(base_url), None)
+    def _clear_cloud_circuit_breaker(
+        base_url: str | None = None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> None:
+        _cloud_circuit_breakers.pop(
+            _cloud_circuit_breaker_key(base_url, sandbox_id=sandbox_id),
+            None,
+        )
 
     class CloudUnavailableError(Exception):
         """Raised when cloud backend is unreachable. Caught by try/except Exception in local-first endpoints."""
@@ -9746,10 +10074,49 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_method = method.upper()
         if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
-        base_url = (base_url_override or "").strip().rstrip("/") or cloud_api_base_url()
+        override_url = (base_url_override or "").strip().rstrip("/")
+
+        if not allow_unauthenticated:
+            context = _capture_active_scoped_cloud_context()
+            if context is None:
+                raise HTTPException(status_code=401, detail="Not authenticated")
+            if override_url and override_url != context.cloud_api_url.rstrip("/"):
+                # Never attach a workspace token to a caller-supplied different host.
+                raise HTTPException(status_code=409, detail="云端地址与当前组织工作空间不匹配")
+            base_url = context.cloud_api_url.rstrip("/")
+            if not bypass_circuit_breaker and _time.time() - _cloud_circuit_last_failure(
+                base_url,
+                sandbox_id=context.sandbox_id,
+            ) < 60:
+                raise HTTPException(status_code=502, detail="Cloud backend unavailable (circuit breaker active)")
+            try:
+                payload = scoped_cloud_request(
+                    context,
+                    method,
+                    path,
+                    json_body=json_body,
+                    timeout=timeout,
+                )
+            except HTTPException as exc:
+                if exc.status_code == 502:
+                    _mark_cloud_circuit_breaker_failure(
+                        base_url,
+                        sandbox_id=context.sandbox_id,
+                    )
+                raise
+            _clear_cloud_circuit_breaker(base_url, sandbox_id=context.sandbox_id)
+            return payload
+
+        # Public auth/bootstrap calls are explicitly unauthenticated.  Do not
+        # opportunistically attach the token from whichever workspace is active.
+        base_url = override_url or cloud_api_base_url()
 
         # Fast fail if cloud was down recently (circuit breaker)
-        if not bypass_circuit_breaker and _time.time() - _cloud_circuit_last_failure(base_url) < 60:
+        public_circuit_scope = "__public__"
+        if not bypass_circuit_breaker and _time.time() - _cloud_circuit_last_failure(
+            base_url,
+            sandbox_id=public_circuit_scope,
+        ) < 60:
             raise HTTPException(status_code=502, detail="Cloud backend unavailable (circuit breaker active)")
 
         def perform_request(token: str | None):
@@ -9764,13 +10131,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timeout=timeout,
             )
 
-        token = get_cloud_token()
-        if not token and not allow_unauthenticated:
-            if get_cloud_refresh_token():
-                refresh_cloud_session()
-                token = get_cloud_token()
-            else:
-                raise HTTPException(status_code=401, detail="Not authenticated")
+        token = None
         try:
             response = perform_request(token)
         except httpx.HTTPError:
@@ -9779,22 +10140,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             try:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
-                _mark_cloud_circuit_breaker_failure(base_url)
-                raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
-        if response.status_code == 401 and not allow_unauthenticated and get_cloud_refresh_token():
-            refresh_cloud_session()
-            token = get_cloud_token()
-            try:
-                response = perform_request(token)
-            except httpx.HTTPError as exc:
-                _mark_cloud_circuit_breaker_failure(base_url)
+                _mark_cloud_circuit_breaker_failure(
+                    base_url,
+                    sandbox_id=public_circuit_scope,
+                )
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         # Cloud responded — reset circuit breaker
-        _clear_cloud_circuit_breaker(base_url)
-        if response.status_code == 401 and not allow_unauthenticated:
-            clear_cloud_session()
-        if response.status_code == 403 and not allow_unauthenticated and path.startswith("/api/v1/auth/"):
-            clear_cloud_session()
+        _clear_cloud_circuit_breaker(base_url, sandbox_id=public_circuit_scope)
         if 300 <= response.status_code < 400:
             raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
@@ -9810,11 +10162,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         access_token: str
         refresh_token: str
         cloud_instance_id: str = ""
+        persistent: bool = True
+
+    def _write_scoped_cloud_session(
+        context: ScopedCloudContext,
+        *,
+        access_token: str,
+        refresh_token: str,
+        user: SessionUserRecord | None,
+    ) -> None:
+        """Write all session fields to one explicit sandbox as a single DB transaction."""
+        session_user_json = to_json(user.model_dump()) if user else ""
+
+        def _write_persisted(_conn) -> None:
+            set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", access_token)
+            set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", refresh_token)
+            set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", session_user_json)
+            if session_user_json:
+                set_sandbox_setting(
+                    state.db,
+                    context.sandbox_id,
+                    "cloud_session_user_snapshot",
+                    session_user_json,
+                )
+
+        if context.persistent:
+            state.db.run_in_transaction(_write_persisted)
+            state.volatile_cloud_sessions.pop(context.sandbox_id, None)
+        else:
+            # Keep a non-persistent login non-persistent even after refresh.
+            state.db.run_in_transaction(
+                lambda _conn: (
+                    set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", ""),
+                    set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", ""),
+                    set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", ""),
+                )
+            )
+            volatile = state.volatile_cloud_sessions.setdefault(context.sandbox_id, {})
+            volatile["cloud_access_token"] = access_token
+            volatile["cloud_refresh_token"] = refresh_token
+            volatile["cloud_session_user"] = session_user_json
 
     def _clear_scoped_cloud_session(context: ScopedCloudContext) -> None:
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", "")
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", "")
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", "")
+        _write_scoped_cloud_session(
+            context,
+            access_token="",
+            refresh_token="",
+            user=None,
+        )
+        state.volatile_cloud_sessions.pop(context.sandbox_id, None)
         if context.sandbox_id == get_active_sandbox_id(state.db):
             _refresh_active_workspace_runtime()
 
@@ -9848,13 +10244,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if context.organization_id and user.organizationId != context.organization_id:
             _clear_scoped_cloud_session(context)
             raise HTTPException(status_code=409, detail="组织登录状态与当前工作空间不匹配，请重新登录该组织")
+        _write_scoped_cloud_session(
+            context,
+            access_token=token,
+            refresh_token=next_refresh_token,
+            user=user,
+        )
         context.access_token = token
         context.refresh_token = next_refresh_token
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", token)
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", next_refresh_token)
-        session_user_json = to_json(user.model_dump())
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", session_user_json)
-        set_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user_snapshot", session_user_json)
         return user
 
     def scoped_cloud_request(
@@ -9899,10 +10296,81 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
         return _cloud_json_payload(response, context="组织云请求")
 
+    def _scoped_cloud_context_from_workspace(
+        workspace_ctx: WorkspaceContext,
+    ) -> ScopedCloudContext | None:
+        if workspace_ctx.kind != "organization":
+            return None
+        if not workspace_ctx.session_matches_workspace:
+            raise AsyncJobScopeError(
+                "workspace_session_mismatch",
+                sandbox_id=workspace_ctx.sandbox_id,
+            )
+        cloud_api_url = (workspace_ctx.cloud_api_url or "").rstrip("/")
+        organization_id = (
+            workspace_ctx.organization_id or workspace_ctx.session_organization_id
+        ).strip()
+        if not cloud_api_url or not organization_id:
+            return None
+        if not (workspace_ctx.access_token or workspace_ctx.refresh_token):
+            return None
+        return ScopedCloudContext(
+            sandbox_id=workspace_ctx.sandbox_id,
+            organization_id=organization_id,
+            cloud_api_url=cloud_api_url,
+            access_token=workspace_ctx.access_token,
+            refresh_token=workspace_ctx.refresh_token,
+            cloud_instance_id=workspace_ctx.cloud_instance_id,
+            persistent=bool(
+                get_sandbox_setting(state.db, workspace_ctx.sandbox_id, "cloud_access_token", "")
+                or get_sandbox_setting(state.db, workspace_ctx.sandbox_id, "cloud_refresh_token", "")
+                or get_sandbox_setting(state.db, workspace_ctx.sandbox_id, "cloud_session_user", "")
+            ),
+        )
+
+    def _freeze_volatile_cloud_session(workspace_ctx: WorkspaceContext) -> WorkspaceContext:
+        """Overlay only the selected sandbox's session-only credentials onto its snapshot."""
+        sandbox_id = str(workspace_ctx.sandbox_id or "").strip()
+        volatile = dict(state.volatile_cloud_sessions.get(sandbox_id, {}) or {})
+        if not sandbox_id or not volatile:
+            return workspace_ctx
+        raw_user = str(volatile.get("cloud_session_user") or "")
+        parsed_user = from_json(raw_user, {}) if raw_user else {}
+        if not isinstance(parsed_user, dict):
+            parsed_user = {}
+        workspace_org_id = str(workspace_ctx.organization_id or "").strip()
+        volatile_org_id = str(parsed_user.get("organizationId") or "").strip()
+        volatile_has_credentials = bool(
+            str(volatile.get("cloud_access_token") or "").strip()
+            or str(volatile.get("cloud_refresh_token") or "").strip()
+        )
+        volatile_has_session_material = volatile_has_credentials or bool(parsed_user)
+        if workspace_ctx.kind == "organization" and volatile_has_session_material and (
+            not workspace_org_id
+            or not volatile_org_id
+            or workspace_org_id != volatile_org_id
+        ):
+            logger.warning(
+                "[workspace-session] discard mismatched volatile cloud session: sandbox=%s org=%s sessionOrg=%s",
+                sandbox_id,
+                workspace_org_id,
+                volatile_org_id,
+            )
+            state.volatile_cloud_sessions.pop(sandbox_id, None)
+            return workspace_ctx
+        if not workspace_ctx.access_token:
+            workspace_ctx.access_token = str(volatile.get("cloud_access_token") or "")
+        if not workspace_ctx.refresh_token:
+            workspace_ctx.refresh_token = str(volatile.get("cloud_refresh_token") or "")
+        if not workspace_ctx.session_user and parsed_user:
+            workspace_ctx.session_user = dict(parsed_user)
+            workspace_ctx.user_id = str(parsed_user.get("id") or "")
+        return workspace_ctx
+
     def _capture_active_scoped_cloud_context() -> ScopedCloudContext | None:
         """Freeze the current organization workspace cloud session for a background job."""
         try:
-            workspace_ctx = load_active_workspace_context(state.db)
+            workspace_ctx = _freeze_volatile_cloud_session(load_active_workspace_context(state.db))
         except Exception:
             return None
         sandbox_id = str(workspace_ctx.sandbox_id or "").strip()
@@ -9930,6 +10398,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             access_token=workspace_ctx.access_token,
             refresh_token=workspace_ctx.refresh_token,
             cloud_instance_id=workspace_ctx.cloud_instance_id,
+            persistent=bool(
+                get_sandbox_setting(state.db, sandbox_id, "cloud_access_token", "")
+                or get_sandbox_setting(state.db, sandbox_id, "cloud_refresh_token", "")
+                or get_sandbox_setting(state.db, sandbox_id, "cloud_session_user", "")
+            ),
         )
 
     def cloud_request_binary(method: str, path: str, *, json_body: dict | None = None, timeout: float = 120.0) -> tuple[bytes, dict[str, str]]:
@@ -9937,7 +10410,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         normalized_method = method.upper()
         if COLLAB_PREVIEW_MODE and normalized_method not in {"GET", "HEAD", "OPTIONS"}:
             raise HTTPException(status_code=403, detail="协作预览模式不可写云端。")
-        base_url = cloud_api_base_url()
+        context = _capture_active_scoped_cloud_context()
+        if context is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        base_url = context.cloud_api_url.rstrip("/")
 
         def perform_request(token: str | None):
             headers = {}
@@ -9951,11 +10427,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timeout=timeout,
             )
 
-        token = get_cloud_token()
+        token = context.access_token
         if not token:
-            if get_cloud_refresh_token():
-                refresh_cloud_session()
-                token = get_cloud_token()
+            if context.refresh_token:
+                _refresh_scoped_cloud_session(context)
+                token = context.access_token
             else:
                 raise HTTPException(status_code=401, detail="Not authenticated")
         try:
@@ -9966,10 +10442,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 response = perform_request(token)
             except httpx.HTTPError as exc:
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
-        if response.status_code == 401 and get_cloud_refresh_token():
-            refresh_cloud_session()
-            token = get_cloud_token()
+        if response.status_code == 401 and context.refresh_token:
+            _refresh_scoped_cloud_session(context)
+            token = context.access_token
             response = perform_request(token)
+        if response.status_code == 401:
+            _clear_scoped_cloud_session(context)
         if 300 <= response.status_code < 400:
             raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
@@ -10191,8 +10669,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         file_content: bytes,
         content_type: str = "application/octet-stream",
         form_fields: dict[str, str] | None = None,
+        context: ScopedCloudContext | None = None,
     ) -> object:
-        base_url = cloud_api_base_url()
+        context = context or _capture_active_scoped_cloud_context()
+        if context is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        base_url = context.cloud_api_url
 
         def _do_upload(token: str):
             headers = {"Authorization": f"Bearer {token}"}
@@ -10207,20 +10689,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 trust_env=False,
             )
 
-        token = get_cloud_token()
+        token = context.access_token
         if not token:
-            if get_cloud_refresh_token():
-                refresh_cloud_session()
-                token = get_cloud_token()
+            if context.refresh_token:
+                _refresh_scoped_cloud_session(context)
+                token = context.access_token
             if not token:
                 raise HTTPException(status_code=401, detail="Not authenticated")
         try:
             response = _do_upload(token)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud upload unavailable: {exc}") from exc
-        if response.status_code == 401 and get_cloud_refresh_token():
-            refresh_cloud_session()
-            token = get_cloud_token()
+        if response.status_code == 401 and context.refresh_token:
+            _refresh_scoped_cloud_session(context)
+            token = context.access_token
             if token:
                 try:
                     response = _do_upload(token)
@@ -10235,11 +10717,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return response.json() if response.content else {}
 
     def require_session_user() -> SessionUserRecord:
-        payload = cloud_request("GET", "/api/v1/auth/me")
+        context = _capture_active_scoped_cloud_context()
+        if context is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        payload = scoped_cloud_request(context, "GET", "/api/v1/auth/me")
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid auth response")
         user = SessionUserRecord(**payload)
-        set_cloud_session(get_cloud_token(), user)
+        if user.organizationId != context.organization_id:
+            _clear_scoped_cloud_session(context)
+            raise HTTPException(status_code=409, detail="组织登录状态与当前工作空间不匹配，请重新登录该组织")
+        _write_scoped_cloud_session(
+            context,
+            access_token=context.access_token,
+            refresh_token=context.refresh_token,
+            user=user,
+        )
         return user
 
     def _parse_iso_moment(value: str | None) -> datetime | None:
@@ -10506,8 +10999,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             createdAt=str(row["created_at"]),
         )
 
-    def fetch_task_attachments(task_id: str, *, cloud: bool) -> list[TaskAttachmentRecord]:
+    def fetch_task_attachments(
+        task_id: str,
+        *,
+        cloud: bool,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> list[TaskAttachmentRecord]:
         table_name = "task_attachments_cloud" if cloud else "task_attachments"
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
         rows = state.db.fetchall(
             f"""
             SELECT
@@ -10520,7 +11019,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (task_id,),
         )
-        return [build_task_attachment(row) for row in rows]
+        return [
+            build_task_attachment(row)
+            for row in rows
+            if _attachment_row_matches_workspace(table_name, row, frozen_workspace_context)
+        ]
 
     def build_attachment_event_line_activity(attachment: TaskAttachmentRecord) -> EventLineActivityRecord:
         return EventLineActivityRecord(
@@ -10555,19 +11058,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         candidate.write_bytes(content)
         return candidate
 
-    def build_cloud_task(payload: dict[str, object], lists_by_id: dict[str, TaskListRecord]) -> TaskRecord:
+    def build_cloud_task(
+        payload: dict[str, object],
+        lists_by_id: dict[str, TaskListRecord],
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskRecord:
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
+        try:
+            build_cloud_context = _scoped_cloud_context_from_workspace(frozen_workspace_context)
+        except AsyncJobScopeError:
+            build_cloud_context = None
         cloud_note = str(payload.get("note")) if payload.get("note") else None
         note_row = state.db.fetchone("SELECT note FROM task_notes_cloud WHERE task_id = ?", (str(payload.get("id")),))
         resolved_note = cloud_note or (str(note_row["note"]) if note_row and note_row["note"] else None)
         client_id = str(payload.get("clientId")) if payload.get("clientId") else None
         event_line_id = str(payload.get("eventLineId")) if payload.get("eventLineId") else None
         event_line_name = str(payload.get("eventLineName")) if payload.get("eventLineName") else None
-        if event_line_id and get_cloud_token():
+        if event_line_id and build_cloud_context is not None:
             try:
-                response_payload = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+                response_payload = scoped_cloud_request(
+                    build_cloud_context,
+                    "GET",
+                    f"/api/v1/event-lines/{event_line_id}",
+                )
                 _upsert_cloud_event_line_shadow_local(
                     response_payload,
-                    target_sandbox_id=active_business_sandbox_id(),
+                    target_sandbox_id=frozen_workspace_context.sandbox_id,
                     fallback_client_id=client_id,
                     fallback_name=event_line_name,
                 )
@@ -10640,10 +11157,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             normalized_id: str,
             fallback_name: str | None,
         ) -> dict[str, object] | None:
-            if not get_cloud_token():
+            if build_cloud_context is None:
                 return None
             try:
-                event_line_payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_id}")
+                event_line_payload = scoped_cloud_request(
+                    build_cloud_context,
+                    "GET",
+                    f"/api/v1/event-lines/{normalized_id}",
+                )
             except HTTPException:
                 return None
             if not isinstance(event_line_payload, dict):
@@ -10670,9 +11191,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.db,
             event_line_id,
             event_line_name,
-            sandbox_id=active_business_sandbox_id(),
+            sandbox_id=frozen_workspace_context.sandbox_id,
             cloud_resolver=resolve_cloud_event_line_context,
         )
+        attachment_workspace_context = frozen_workspace_context
         _sync_task_attachment_scope(
             state.db,
             state.data_dir,
@@ -10683,8 +11205,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id,
             event_line_id,
             cloud=True,
+            attachment_scope_predicate=lambda table_name, row: _attachment_row_matches_workspace(
+                table_name,
+                row,
+                attachment_workspace_context,
+            ),
+            target_scope_predicate=lambda target_client_id, target_event_line_id: _attachment_targets_match_workspace(
+                target_client_id,
+                target_event_line_id,
+                attachment_workspace_context,
+            ),
         )
-        attachments = fetch_task_attachments(str(payload.get("id")), cloud=True)
+        attachments = fetch_task_attachments(
+            str(payload.get("id")),
+            cloud=True,
+            workspace_context=attachment_workspace_context,
+        )
         (
             business_category,
             current_blocker,
@@ -10764,14 +11300,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     _cloud_task_board_cache: dict[str, dict[str, object]] = {}
 
-    def _cloud_task_board_cache_key() -> str:
-        sandbox_id = active_business_sandbox_id()
-        raw_cloud_url = get_active_sandbox_setting(state.db, "cloud_api_url", "")
+    def _cloud_task_board_cache_key(
+        workspace_context: WorkspaceContext | None = None,
+    ) -> str:
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
+        sandbox_id = frozen_workspace_context.sandbox_id
+        raw_cloud_url = frozen_workspace_context.cloud_api_url
         try:
             cloud_url = normalize_configured_cloud_api_url(raw_cloud_url)
         except ValueError:
             cloud_url = str(raw_cloud_url or "").strip()
-        organization_id = active_workspace_organization_id()
+        organization_id = frozen_workspace_context.organization_id
         return f"{sandbox_id}|{cloud_url}|{organization_id}"
 
     def _invalidate_cloud_task_board_cache() -> None:
@@ -12520,8 +13059,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 except Exception as error:
                     logger.warning("[CLIENT-PULL] shadow upsert failed for %s: %s", item.get("id"), error)
 
-    def _merge_local_tasks_into(board: TaskBoardResponse) -> TaskBoardResponse:
+    def _merge_local_tasks_into(
+        board: TaskBoardResponse,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskBoardResponse:
         """Local-first merge: add recent local-only tasks + merge local attachments into cloud tasks."""
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
         _restore_local_completed_task_statuses()
         cloud_task_map = {t.id: t for t in board.tasks}
         cloud_task_index = {t.id: index for index, t in enumerate(board.tasks)}
@@ -12530,7 +13074,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # For each cloud task, check if local has more attachments
         for index, task in enumerate(board.tasks):
-            local_atts = fetch_task_attachments(task.id, cloud=True)
+            local_atts = fetch_task_attachments(
+                task.id,
+                cloud=True,
+                workspace_context=frozen_workspace_context,
+            )
             if len(local_atts) > len(task.attachments):
                 merged_tasks[index] = task.model_copy(update={"attachments": local_atts})
                 changed = True
@@ -12551,7 +13099,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 OR sync_status IN ('pending', 'syncing')
               )
             """,
-            (active_business_sandbox_id(), cutoff, cutoff),
+            (frozen_workspace_context.sandbox_id, cutoff, cutoff),
         )
         for row in local_rows:
             local_id = str(row["id"])
@@ -12589,14 +13137,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return TaskBoardResponse(tasks=merged_tasks, lists=board.lists, tags=board.tags, commonTags=board.commonTags)
         return board
 
-    def cloud_task_board() -> TaskBoardResponse:
+    def cloud_task_board(
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskBoardResponse:
         import time
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
+        try:
+            board_cloud_context = _scoped_cloud_context_from_workspace(frozen_workspace_context)
+        except AsyncJobScopeError as exc:
+            raise HTTPException(status_code=404, detail="Task not found") from exc
         now = time.time()
-        cache_key = _cloud_task_board_cache_key()
+        cache_key = _cloud_task_board_cache_key(frozen_workspace_context)
         cached = _cloud_task_board_cache.get(cache_key)
         if cached and cached.get("data") is not None and now - float(cached.get("ts") or 0.0) < 30:
-            return _merge_local_tasks_into(cached["data"])  # type: ignore[arg-type]
-        payload = cloud_request("GET", "/api/v1/tasks")
+            return _merge_local_tasks_into(  # type: ignore[arg-type]
+                cached["data"],
+                workspace_context=frozen_workspace_context,
+            )
+        payload = (
+            scoped_cloud_request(board_cloud_context, "GET", "/api/v1/tasks")
+            if board_cloud_context is not None
+            else cloud_request("GET", "/api/v1/tasks")
+        )
         if not isinstance(payload, dict):
             raise HTTPException(status_code=502, detail="Invalid task board payload")
         lists = [
@@ -12613,16 +13176,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if isinstance(item, dict)
         ]
         lists_by_id = {item.id: item for item in lists}
-        tasks = [build_cloud_task(item, lists_by_id) for item in payload.get("tasks", []) if isinstance(item, dict)]
+        tasks = [
+            build_cloud_task(
+                item,
+                lists_by_id,
+                workspace_context=frozen_workspace_context,
+            )
+            for item in payload.get("tasks", [])
+            if isinstance(item, dict)
+        ]
         cloud_tags = [build_cloud_task_tag(item) for item in payload.get("tags", []) if isinstance(item, dict)]
         cloud_common_tags = [str(item) for item in payload.get("commonTags", []) if isinstance(item, str)]
         result = TaskBoardResponse(tasks=tasks, lists=lists, tags=cloud_tags, commonTags=cloud_common_tags)
-        result = _merge_local_tasks_into(result)
+        result = _merge_local_tasks_into(
+            result,
+            workspace_context=frozen_workspace_context,
+        )
         _cloud_task_board_cache[cache_key] = {"data": result, "ts": now}
         return result
 
-    def fetch_cloud_task_by_id(task_id: str) -> TaskRecord:
-        board = cloud_task_board()
+    def fetch_cloud_task_by_id(
+        task_id: str,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskRecord:
+        board = cloud_task_board(workspace_context=workspace_context)
         task = next((item for item in board.tasks if item.id == task_id), None)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -12654,7 +13232,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         operator_row = current_operator_row()
         return _visible_local_task_tags(state.db, str(operator_row["id"]))
 
-    def _task_collaboration_state(task_id: str) -> tuple[list[TaskCollaboratorRecord], dict[str, int], str | None]:
+    def _task_collaboration_state(
+        task_id: str,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> tuple[list[TaskCollaboratorRecord], dict[str, int], str | None]:
         rows = state.db.fetchall(
             """
             SELECT *
@@ -12666,8 +13248,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         summary = {"pending": 0, "accepted": 0, "returned": 0}
         collaborators: list[TaskCollaboratorRecord] = []
-        session_user = get_cached_session_user()
-        viewer_user_id = session_user.id if session_user else ""
+        if workspace_context is not None:
+            viewer_user_id = str(workspace_context.user_id or "")
+        else:
+            active_session_user = get_cached_session_user()
+            viewer_user_id = active_session_user.id if active_session_user else ""
         viewer_status: str | None = None
         for row in rows:
             inbox_status = str(row["inbox_status"] or "pending")
@@ -12739,7 +13324,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return v
         return _PRIORITY_FALLBACK_MAP.get(v, "normal")
 
-    def build_task(row) -> TaskRecord:
+    def build_task(
+        row,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskRecord:
+        row_sandbox_id = str(row["sandbox_id"] or DEFAULT_LOCAL_SANDBOX_ID)
+        frozen_workspace_context = workspace_context or _freeze_volatile_cloud_session(
+            load_workspace_context(state.db, row_sandbox_id)
+        )
         note_row = state.db.fetchone("SELECT note FROM task_notes WHERE task_id = ?", (str(row["id"]),))
         client_id = str(row["client_id"]) if row["client_id"] else None
         event_line_id = str(row["event_line_id"]) if row["event_line_id"] else None
@@ -12755,14 +13348,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task_desc=str(row["description"]),
             project_module_id=project_module.id if project_module else project_module_id,
             project_flow_id=project_flow.id if project_flow else project_flow_id,
+            sandbox_id=row_sandbox_id,
         )
         event_line_context = _event_line_snapshot_context(
             state.db,
             event_line_id,
             str(event_line_row["name"]) if event_line_row else None,
-            sandbox_id=active_business_sandbox_id(),
+            sandbox_id=row_sandbox_id,
         )
-        attachments = fetch_task_attachments(str(row["id"]), cloud=False)
+        attachments = fetch_task_attachments(
+            str(row["id"]),
+            cloud=False,
+            workspace_context=frozen_workspace_context,
+        )
         (
             business_category,
             current_blocker,
@@ -12788,7 +13386,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id=client_id,
             event_line_id=event_line_id,
         )
-        collaborators, collaboration_summary, viewer_inbox_status = _task_collaboration_state(str(row["id"]))
+        collaborators, collaboration_summary, viewer_inbox_status = _task_collaboration_state(
+            str(row["id"]),
+            workspace_context=frozen_workspace_context,
+        )
         temporal_fields = derive_task_temporal_fields(
             start_date=str(row["start_date"]) if row["start_date"] else None,
             due_date=str(row["due_date"]) if row["due_date"] else None,
@@ -13062,7 +13663,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             isKey=bool(row["is_key"]) if "is_key" in row.keys() else False,
         )
 
-    def build_cloud_event_line_detail(payload: dict[str, object]) -> EventLineDetailRecord:
+    def build_cloud_event_line_detail(
+        payload: dict[str, object],
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> EventLineDetailRecord:
         event_line_payload = payload.get("eventLine")
         tasks_payload = payload.get("tasks")
         activities_payload = payload.get("activities")
@@ -13084,13 +13689,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "SELECT * FROM task_attachments_cloud WHERE event_line_id = ? ORDER BY created_at DESC",
             (event_line.id,),
         ) if event_line.id else []
+        local_attachment_rows = [
+            row
+            for row in local_attachment_rows
+            if _attachment_row_matches_workspace(
+                "task_attachments_cloud",
+                row,
+                workspace_context,
+            )
+        ]
         attachment_activities = [
             build_attachment_event_line_activity(build_task_attachment(row))
             for row in local_attachment_rows
         ]
         combined_activities = remote_activities + attachment_activities
         combined_activities.sort(key=lambda item: (item.happenedAt, item.id), reverse=True)
-        memory_response = get_event_line_memory_response(state.db, event_line.id) if event_line.id else EventLineMemoryResponse(
+        local_event_line_id = ""
+        if event_line.id:
+            try:
+                local_event_line_id = str(
+                    _event_line_in_workspace(event_line.id, workspace_context)["id"]
+                )
+            except HTTPException:
+                local_event_line_id = ""
+        memory_response = get_event_line_memory_response(state.db, local_event_line_id) if local_event_line_id else EventLineMemoryResponse(
             eventLineId="",
             lineName="",
             eventLineMemorySnapshot=None,
@@ -13098,7 +13720,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return EventLineDetailRecord(
             eventLine=event_line,
-            tasks=[build_cloud_task(item, {}) for item in tasks_payload if isinstance(item, dict)] if isinstance(tasks_payload, list) else [],
+            tasks=[
+                build_cloud_task(item, {}, workspace_context=workspace_context)
+                for item in tasks_payload
+                if isinstance(item, dict)
+            ] if isinstance(tasks_payload, list) else [],
             activities=combined_activities,
             memorySnapshot=memory_response.eventLineMemorySnapshot,
             predictionReadiness=memory_response.eventLineMemorySnapshot.predictionReadiness if memory_response.eventLineMemorySnapshot else None,
@@ -13269,26 +13895,36 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             projectOptions=project_options,
         )
 
-    def fetch_tasks(where_clause: str = "", params: tuple = ()) -> list[TaskRecord]:
+    def fetch_tasks(
+        where_clause: str = "",
+        params: tuple = (),
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> list[TaskRecord]:
         query = """
             SELECT t.*, l.name AS list_name, l.color AS list_color, c.name AS client_name
             FROM tasks t
             JOIN task_lists l ON l.id = t.list_id
             LEFT JOIN clients c ON c.id = t.client_id
         """
-        scoped_params = (active_business_sandbox_id(), *params)
+        resolved_workspace_context = workspace_context or _active_workspace_context_snapshot()
+        scoped_params = (resolved_workspace_context.sandbox_id, *params)
         sandbox_clause = active_business_sandbox_where("t")
         if where_clause:
             query += f" WHERE {sandbox_clause} AND ({where_clause})"
         else:
             query += f" WHERE {sandbox_clause}"
         query += " ORDER BY CASE t.status WHEN 'inbox' THEN 0 WHEN 'doing' THEN 1 WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, t.updated_at DESC"
-        return [build_task(row) for row in state.db.fetchall(query, scoped_params)]
+        return [
+            build_task(row, workspace_context=resolved_workspace_context)
+            for row in state.db.fetchall(query, scoped_params)
+        ]
 
     def _mark_task_collaborator_handled(
         task_id: str,
         user_id: str | None,
         inbox_status: Literal["accepted", "returned"],
+        workspace_context: WorkspaceContext,
         *,
         reason: str | None = None,
     ) -> bool:
@@ -13304,6 +13940,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 handled_at = ?,
                 updated_at = ?
             WHERE task_id = ? AND user_id = ?
+              AND EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = task_collaborators.task_id
+                      AND COALESCE(t.sandbox_id, '') = ?
+                      AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+              )
             """,
             (
                 inbox_status,
@@ -13313,18 +13955,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
                 task_id,
                 normalized_user_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
             ),
         )
         updated = int(
             state.db.scalar(
-                "SELECT COUNT(1) FROM task_collaborators WHERE task_id = ? AND user_id = ? AND inbox_status = ?",
-                (task_id, normalized_user_id, inbox_status),
+                """
+                SELECT COUNT(1)
+                FROM task_collaborators tc
+                JOIN tasks t ON t.id = tc.task_id
+                WHERE tc.task_id = ? AND tc.user_id = ? AND tc.inbox_status = ?
+                  AND COALESCE(t.sandbox_id, '') = ?
+                  AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+                """,
+                (
+                    task_id,
+                    normalized_user_id,
+                    inbox_status,
+                    workspace_context.sandbox_id,
+                    workspace_context.organization_id,
+                    workspace_context.organization_id,
+                ),
             )
             or 0
         )
         return updated > 0
 
     def _repair_completed_task_collaboration_state() -> int:
+        # Intentional global maintenance repair across every WorkspaceContext:
+        # the EXISTS parent join prevents orphan collaborator rows, and no
+        # request-selected object is resolved by this startup reconciliation.
         timestamp = now_iso()
         state.db.execute(
             """
@@ -15764,16 +16426,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         records = _task_records_for_views()
         return [task for task in records if task.id in wanted]
 
-    def _attachments_for_tasks(tasks: list[TaskRecord], *, cloud: bool) -> list[TaskAttachmentRecord]:
+    def _attachments_for_tasks(
+        tasks: list[TaskRecord],
+        *,
+        cloud: bool,
+        workspace_context: WorkspaceContext,
+    ) -> list[TaskAttachmentRecord]:
         attachments: dict[str, TaskAttachmentRecord] = {}
         source_modes = [False, True] if cloud else [False]
         for task in tasks:
             for use_cloud in source_modes:
-                for attachment in fetch_task_attachments(task.id, cloud=use_cloud):
+                for attachment in fetch_task_attachments(
+                    task.id,
+                    cloud=use_cloud,
+                    workspace_context=workspace_context,
+                ):
                     attachments[attachment.id] = attachment
         return sorted(attachments.values(), key=lambda item: item.createdAt, reverse=True)
 
-    def _attachments_for_ids(attachment_ids: list[str]) -> list[TaskAttachmentRecord]:
+    def _attachments_for_ids(
+        attachment_ids: list[str],
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> list[TaskAttachmentRecord]:
         wanted = {attachment_id for attachment_id in attachment_ids if attachment_id}
         if not wanted:
             return []
@@ -15784,20 +16459,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 tuple(wanted),
             )
             for row in rows:
+                if not _attachment_row_matches_workspace(
+                    table_name,
+                    row,
+                    workspace_context,
+                ):
+                    continue
                 attachment = build_task_attachment(row)
                 attachments[attachment.id] = attachment
         return sorted(attachments.values(), key=lambda item: item.createdAt, reverse=True)
 
-    def _attachments_for_event_line(event_line_id: str) -> list[TaskAttachmentRecord]:
+    def _attachments_for_event_line(
+        event_line_id: str,
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> list[TaskAttachmentRecord]:
         if not event_line_id:
+            return []
+        try:
+            event_line_row = _event_line_in_workspace(
+                event_line_id,
+                workspace_context,
+            )
+        except HTTPException:
+            return []
+        event_line_refs = tuple(
+            dict.fromkeys(
+                (
+                    str(event_line_row["id"] or "").strip(),
+                    str(event_line_row["cloud_id"] or "").strip(),
+                )
+            )
+        )
+        event_line_refs = tuple(ref for ref in event_line_refs if ref)
+        if not event_line_refs:
             return []
         attachments: dict[str, TaskAttachmentRecord] = {}
         for table_name in ("task_attachments", "task_attachments_cloud"):
             rows = state.db.fetchall(
-                f"SELECT * FROM {table_name} WHERE event_line_id = ? ORDER BY created_at DESC",
-                (event_line_id,),
+                f"SELECT * FROM {table_name} WHERE event_line_id IN ({_sql_placeholders(event_line_refs)}) ORDER BY created_at DESC",
+                event_line_refs,
             )
             for row in rows:
+                if not _attachment_row_matches_workspace(
+                    table_name,
+                    row,
+                    workspace_context,
+                ):
+                    continue
                 attachment = build_task_attachment(row)
                 attachments[attachment.id] = attachment
         return sorted(attachments.values(), key=lambda item: item.createdAt, reverse=True)
@@ -15908,19 +16617,35 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _drill_target_response_for_event_line(
         target: ReviewDashboardCardTargetRecord,
     ) -> ReviewDashboardDrillTargetResponse:
+        workspace_context = _active_workspace_context_snapshot()
         event_line_id = _normalize_event_line_reference(target.targetId)
-        local_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+        try:
+            local_row = _event_line_in_workspace(event_line_id, workspace_context)
+        except HTTPException:
+            local_row = None
         detail: EventLineDetailRecord | None = None
-        if get_cloud_token():
-            response = cloud_request("GET", f"/api/v1/event-lines/{event_line_id}")
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context:
+            response = scoped_cloud_request(
+                cloud_context,
+                "GET",
+                f"/api/v1/event-lines/{event_line_id}",
+            )
             if isinstance(response, dict):
-                detail = build_cloud_event_line_detail(response)
+                detail = build_cloud_event_line_detail(
+                    response,
+                    workspace_context=workspace_context,
+                )
         if detail is None:
             if not local_row:
                 raise HTTPException(status_code=404, detail="Event line not found")
             detail = build_event_line_detail(local_row)
         memory_response = get_event_line_memory_response(state.db, event_line_id) if local_row else None
-        attachments = _attachments_for_tasks(detail.tasks, cloud=bool(get_cloud_token()))
+        attachments = _attachments_for_tasks(
+            detail.tasks,
+            cloud=cloud_context is not None,
+            workspace_context=workspace_context,
+        )
         meetings = _meeting_summaries_for_tasks(detail.tasks)
         support_requests = _support_requests_for_tasks(detail.tasks)
         return ReviewDashboardDrillTargetResponse(
@@ -15936,6 +16661,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _drill_target_response_for_task_view(
         target: ReviewDashboardCardTargetRecord,
     ) -> ReviewDashboardDrillTargetResponse:
+        workspace_context = _active_workspace_context_snapshot()
         view = _load_task_view_definition(target.targetId)
         if view is None:
             view = _build_ad_hoc_task_view(
@@ -15944,7 +16670,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 target_filters=target.targetFilters,
             )
         tasks = _tasks_for_task_view(view, extra_filters=target.targetFilters)
-        attachments = _attachments_for_tasks(tasks, cloud=bool(get_cloud_token()))
+        attachments = _attachments_for_tasks(
+            tasks,
+            cloud=bool(
+                workspace_context.access_token or workspace_context.refresh_token
+            ),
+            workspace_context=workspace_context,
+        )
         meetings = _meeting_summaries_for_tasks(tasks)
         support_requests = _support_requests_for_tasks(tasks)
         return ReviewDashboardDrillTargetResponse(
@@ -15958,13 +16690,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _drill_target_response_for_meeting(
         target: ReviewDashboardCardTargetRecord,
     ) -> ReviewDashboardDrillTargetResponse:
+        workspace_context = _active_workspace_context_snapshot()
         meeting = _meeting_summary_for_id(target.targetId)
         tasks = [
             task
             for task in _task_records_for_views()
             if task.sourceId == meeting.id and task.sourceType in {"meeting", "meeting_publish", "meeting_action_item_publish"}
         ]
-        attachments = _attachments_for_tasks(tasks, cloud=bool(get_cloud_token()))
+        attachments = _attachments_for_tasks(
+            tasks,
+            cloud=bool(
+                workspace_context.access_token or workspace_context.refresh_token
+            ),
+            workspace_context=workspace_context,
+        )
         support_requests = _support_requests_for_tasks(tasks)
         return ReviewDashboardDrillTargetResponse(
             target=target,
@@ -15977,9 +16716,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _drill_target_response_for_support_request(
         target: ReviewDashboardCardTargetRecord,
     ) -> ReviewDashboardDrillTargetResponse:
+        workspace_context = _active_workspace_context_snapshot()
         request_record = _support_request_by_id(target.targetId)
         tasks = _task_records_for_ids([request_record.taskId] if request_record.taskId else [])
-        attachments = _attachments_for_tasks(tasks, cloud=bool(get_cloud_token()))
+        attachments = _attachments_for_tasks(
+            tasks,
+            cloud=bool(
+                workspace_context.access_token or workspace_context.refresh_token
+            ),
+            workspace_context=workspace_context,
+        )
         meetings = _meeting_summaries_for_tasks(tasks)
         return ReviewDashboardDrillTargetResponse(
             target=target,
@@ -15992,6 +16738,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _drill_target_response_for_attachment_group(
         target: ReviewDashboardCardTargetRecord,
     ) -> ReviewDashboardDrillTargetResponse:
+        workspace_context = _active_workspace_context_snapshot()
         attachment_ids = [
             str(item)
             for item in target.targetFilters.get("attachmentIds", [])
@@ -16004,12 +16751,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         ]
         event_line_id = str(target.targetFilters.get("eventLineId") or "").strip()
 
-        attachments = _attachments_for_ids(attachment_ids)
+        attachments = _attachments_for_ids(
+            attachment_ids,
+            workspace_context=workspace_context,
+        )
         if not attachments and task_ids:
             tasks = _task_records_for_ids(task_ids)
-            attachments = _attachments_for_tasks(tasks, cloud=bool(get_cloud_token()))
+            attachments = _attachments_for_tasks(
+                tasks,
+                cloud=bool(
+                    workspace_context.access_token or workspace_context.refresh_token
+                ),
+                workspace_context=workspace_context,
+            )
         elif not attachments and event_line_id:
-            attachments = _attachments_for_event_line(event_line_id)
+            attachments = _attachments_for_event_line(
+                event_line_id,
+                workspace_context=workspace_context,
+            )
 
         related_task_ids = task_ids or [attachment.taskId for attachment in attachments if attachment.taskId]
         tasks = _task_records_for_ids(related_task_ids)
@@ -16056,8 +16815,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 (to_json([item.id for item in resolved_tags]), to_json([item.name for item in resolved_tags]), now_iso(), str(row["id"])),
             )
 
-    def build_client_summary(client_id: str):
-        row = require_client_in_active_sandbox(client_id)
+    def build_client_summary(
+        client_id: str,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ):
+        row = require_client_in_workspace(
+            client_id,
+            workspace_context or _active_workspace_context_snapshot(),
+        )
         # P7：解析扩展字段，老 row 缺这两列时给安全默认
         try:
             related_ids = json.loads(str(row["related_user_ids_json"] or "[]"))
@@ -16111,10 +16877,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def _normalize_workspace_client_name(value: str | None) -> str:
         return " ".join(str(value or "").strip().split()).casefold()
 
-    def _ensure_local_organization_workspace_client(organization_name: str | None) -> ClientSummary | None:
+    def _insert_scoped_default_chat_thread(
+        *,
+        client_id: str,
+        sandbox_id: str,
+        timestamp: str,
+    ) -> str:
+        thread_id = new_id("thread")
+
+        def _insert_if_client_still_in_scope(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                """
+                INSERT INTO chat_threads(id, client_id, title, created_at, updated_at)
+                SELECT ?, c.id, '默认研判线程', ?, ?
+                FROM clients AS c
+                WHERE c.id = ?
+                  AND COALESCE(c.sandbox_id, '') = ?
+                """,
+                (thread_id, timestamp, timestamp, client_id, sandbox_id),
+            )
+            return cursor.rowcount == 1
+
+        inserted = state.db.run_in_transaction(
+            _insert_if_client_still_in_scope,
+            mode="IMMEDIATE",
+        )
+        if not inserted:
+            raise HTTPException(status_code=404, detail="Client not found")
+        return thread_id
+
+    def _ensure_local_organization_workspace_client(
+        organization_name: str | None,
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> ClientSummary | None:
         resolved_name = " ".join(str(organization_name or "").strip().split())
         if not resolved_name:
             return None
+        frozen_workspace_context = workspace_context or _active_workspace_context_snapshot()
+        if not _workspace_claim_is_valid(frozen_workspace_context):
+            return None
+        target_sandbox_id = frozen_workspace_context.sandbox_id
         normalized_name = _normalize_workspace_client_name(resolved_name)
         rows = state.db.fetchall(
             """
@@ -16124,7 +16927,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
               AND frozen_at IS NULL
             ORDER BY updated_at DESC, name COLLATE NOCASE ASC
             """,
-            active_business_sandbox_param(),
+            (target_sandbox_id,),
         )
         same_name_row = None
         typed_workspace_row = None
@@ -16143,16 +16946,31 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id = str(same_name_row["id"])
             if str(same_name_row["type"] or "") != ORGANIZATION_WORKSPACE_CLIENT_TYPE:
                 state.db.execute(
-                    "UPDATE clients SET type = ?, updated_at = ? WHERE id = ?",
-                    (ORGANIZATION_WORKSPACE_CLIENT_TYPE, timestamp, client_id),
+                    """
+                    UPDATE clients
+                    SET type = ?, updated_at = ?
+                    WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                    """,
+                    (
+                        ORGANIZATION_WORKSPACE_CLIENT_TYPE,
+                        timestamp,
+                        client_id,
+                        target_sandbox_id,
+                    ),
                 )
             ensure_standard_client_folders(client_id)
-            return build_client_summary(client_id)
+            return build_client_summary(
+                client_id,
+                workspace_context=frozen_workspace_context,
+            )
 
         if typed_workspace_row is not None:
             client_id = str(typed_workspace_row["id"])
             ensure_standard_client_folders(client_id)
-            return build_client_summary(client_id)
+            return build_client_summary(
+                client_id,
+                workspace_context=frozen_workspace_context,
+            )
 
         client_id = new_id("client")
         client_color = "#5B7BFE"
@@ -16163,7 +16981,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 client_id,
-                active_business_sandbox_id(),
+                target_sandbox_id,
                 resolved_name,
                 resolved_name,
                 "组织工作台",
@@ -16175,10 +16993,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 timestamp,
             ),
         )
-        thread_id = new_id("thread")
-        state.db.execute(
-            "INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (thread_id, client_id, "默认研判线程", timestamp, timestamp),
+        _insert_scoped_default_chat_thread(
+            client_id=client_id,
+            sandbox_id=target_sandbox_id,
+            timestamp=timestamp,
         )
         ensure_standard_client_folders(client_id)
         log_activity(
@@ -16186,29 +17004,94 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "client",
             client_id,
             {"organizationName": resolved_name, "clientType": ORGANIZATION_WORKSPACE_CLIENT_TYPE},
+            actor_name=_workspace_actor_name(frozen_workspace_context),
         )
-        return build_client_summary(client_id)
+        return build_client_summary(
+            client_id,
+            workspace_context=frozen_workspace_context,
+        )
 
-    def _with_local_organization_workspace_client_id(payload: dict[str, object]) -> dict[str, object]:
+    def _with_local_organization_workspace_client_id(
+        payload: dict[str, object],
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> dict[str, object]:
         status = str(payload.get("membershipStatus") or "")
         organization_name = str(payload.get("organizationName") or "").strip()
         has_organization = bool(payload.get("hasOrganization"))
         if status == "approved" and has_organization and organization_name:
-            local_workspace = _ensure_local_organization_workspace_client(organization_name)
+            local_workspace = _ensure_local_organization_workspace_client(
+                organization_name,
+                workspace_context=workspace_context,
+            )
             if local_workspace is not None:
                 payload = dict(payload)
                 payload["organizationWorkspaceClientId"] = local_workspace.id
         return payload
 
-    def _ensure_local_organization_workspace_from_cloud_membership() -> None:
-        if not get_cloud_token() and not get_cloud_refresh_token():
+    def _ensure_local_organization_workspace_from_cloud_membership(
+        *,
+        context: ScopedCloudContext | None = None,
+        workspace_context: WorkspaceContext | None = None,
+        membership_payload: dict[str, object] | None = None,
+        fetch_membership: bool = True,
+    ) -> None:
+        cloud_context = context or _capture_active_scoped_cloud_context()
+        if cloud_context is None:
             return
+        frozen_workspace_context = workspace_context or _freeze_volatile_cloud_session(
+            load_workspace_context(state.db, cloud_context.sandbox_id)
+        )
         try:
-            membership_payload = cloud_request("GET", "/api/v1/me/org-membership")
+            if membership_payload is None and fetch_membership:
+                fetched_payload = scoped_cloud_request(
+                    cloud_context,
+                    "GET",
+                    "/api/v1/me/org-membership",
+                )
+                membership_payload = fetched_payload if isinstance(fetched_payload, dict) else None
             if isinstance(membership_payload, dict):
-                _with_local_organization_workspace_client_id(membership_payload)
+                payload_org_id = str(membership_payload.get("organizationId") or "").strip()
+                if payload_org_id and payload_org_id != cloud_context.organization_id:
+                    raise HTTPException(status_code=409, detail="组织成员关系与登录工作空间不一致")
+                _with_local_organization_workspace_client_id(
+                    membership_payload,
+                    workspace_context=frozen_workspace_context,
+                )
+        except HTTPException:
+            # A structurally valid response that names a different organization
+            # is an authorization failure, not a best-effort sync outage.
+            raise
         except Exception:
             pass
+
+    def _preflight_cloud_membership_before_workspace_mutation(
+        *,
+        cloud_api_url: str,
+        access_token: str,
+        expected_organization_id: str,
+    ) -> dict[str, object] | None:
+        """Validate a login token's org before creating/activating any sandbox."""
+        try:
+            response = _httpx_request_without_proxy(
+                "GET",
+                f"{cloud_api_url.rstrip('/')}/api/v1/me/org-membership",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=6.0,
+            )
+            if response.status_code >= 400:
+                return None
+            payload = _cloud_json_payload(response, context="登录组织成员关系校验")
+        except Exception:
+            # Membership enrichment remains best-effort when the endpoint is
+            # temporarily unavailable or an older cloud does not expose it.
+            return None
+        if not isinstance(payload, dict):
+            return None
+        payload_org_id = str(payload.get("organizationId") or "").strip()
+        if payload_org_id and payload_org_id != expected_organization_id:
+            raise HTTPException(status_code=409, detail="组织成员关系与登录工作空间不一致")
+        return payload
 
     def build_task_project_context(
         client_id: str | None,
@@ -16218,12 +17101,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         task_desc: str = "",
         project_module_id: str | None = None,
         project_flow_id: str | None = None,
+        *,
+        sandbox_id: str | None = None,
     ) -> TaskProjectContextRecord | None:
         if not client_id:
             return None
+        resolved_sandbox_id = sandbox_id or active_business_sandbox_id()
         client_row = state.db.fetchone(
             "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (client_id, active_business_sandbox_id()),
+            (client_id, resolved_sandbox_id),
         )
         if not client_row:
             return None
@@ -26094,9 +26980,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return ""
         return raw
 
-    def _ensure_local_task_list(list_id: object | None) -> str:
+    def _ensure_local_task_list(
+        list_id: object | None,
+        *,
+        sandbox_id: str | None = None,
+    ) -> str:
         """Ensure a task list exists locally. For cloud lists, create a local mirror if missing."""
-        active_sandbox_id = active_business_sandbox_id()
+        active_sandbox_id = sandbox_id or active_business_sandbox_id()
         normalized_list_id = _normalize_task_list_id_value(list_id)
         row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
@@ -26104,7 +26994,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if row and not row["archived_at"]:
             return normalized_list_id
-        fallback_id = _normalize_task_list_id_value(_get_local_task_settings().defaultListId) or "list-0"
+        fallback_id = _normalize_task_list_id_value(
+            _get_local_task_settings(sandbox_id=active_sandbox_id).defaultListId
+        ) or "list-0"
         fallback_row = state.db.fetchone(
             "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
             (fallback_id, active_sandbox_id),
@@ -26124,7 +27016,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if first_row:
             return str(first_row["id"])
         # Create a catch-all list so we never fail
-        scoped_id = scoped_task_list_id("list-0")
+        scoped_id = scoped_task_list_id("list-0", active_sandbox_id)
         state.db.execute(
             """
             INSERT OR IGNORE INTO task_lists(id, sandbox_id, name, color, sort_order, is_default, scope, archived_at)
@@ -26300,7 +27192,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     continue
             try:
                 cloud_payload["listId"] = _ensure_local_task_list(
-                    cloud_payload.get("listId") or row["list_id"] or "list-0"
+                    cloud_payload.get("listId") or row["list_id"] or "list-0",
+                    sandbox_id=sync_context.sandbox_id,
                 )
                 if pending_action == "update" and not cloud_id:
                     pending_action = "create"
@@ -26415,13 +27308,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _invalidate_cloud_task_board_cache()
         return synced
 
-    def create_task(payload: TaskPayload, status: str = "todo") -> TaskRecord:
+    def create_task(
+        payload: TaskPayload,
+        status: str = "todo",
+        *,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> TaskRecord:
+        workspace_context = workspace_context or _active_workspace_context_snapshot()
+        try:
+            sync_context_for_create = _scoped_cloud_context_from_workspace(workspace_context)
+        except AsyncJobScopeError:
+            sync_context_for_create = None
+        try:
+            workspace_session_user = (
+                SessionUserRecord(**workspace_context.session_user)
+                if workspace_context.session_user
+                else None
+            )
+        except Exception:
+            workspace_session_user = None
         scope_mode = payload.scopeMode or "COLLAB_SHARED"
         requested_client_id = None if scope_mode == "PERSONAL_ONLY" else payload.clientId
         requested_event_line_id = None if scope_mode == "PERSONAL_ONLY" else payload.eventLineId
         normalized_client_id, normalized_event_line_id = _normalize_task_client_and_event_line_refs(
             requested_client_id,
             requested_event_line_id,
+            workspace_context=workspace_context,
+            cloud_context=sync_context_for_create,
         )
         requested_project_module_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectModuleId
         requested_project_flow_id = None if scope_mode == "PERSONAL_ONLY" else payload.projectFlowId
@@ -26434,12 +27347,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             task_desc=payload.desc,
             project_module_id=project_module.id if project_module else None,
             project_flow_id=project_flow.id if project_flow else None,
+            sandbox_id=workspace_context.sandbox_id,
         )
         event_line_context = _event_line_snapshot_context(
             state.db,
             normalized_event_line_id,
             None,
-            sandbox_id=active_business_sandbox_id(),
+            sandbox_id=workspace_context.sandbox_id,
         )
         (
             business_category,
@@ -26463,9 +27377,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # --- LOCAL-FIRST: always write to local SQLite first ---
         timestamp = now_iso()
-        sync_context_for_create = _capture_active_scoped_cloud_context()
         task_id = new_id("task")
-        list_id = _ensure_local_task_list(payload.listId or (_get_local_task_settings().defaultListId or "list-0"))
+        default_list_id = _get_local_task_settings(
+            sandbox_id=workspace_context.sandbox_id
+        ).defaultListId
+        list_id = _ensure_local_task_list(
+            payload.listId or (default_list_id or "list-0"),
+            sandbox_id=workspace_context.sandbox_id,
+        )
         resolved_tags = normalize_local_task_tags(payload.tagIds, payload.tags)
         # 兜底 owner：用户自己建的任务，没明确指定时默认 owner = 当前登录用户。
         # 之前有 bug：前端 currentSessionUser 未就绪时 ownerId 就是 null，落库变成"未指定负责人"，
@@ -26473,7 +27392,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         resolved_owner_id = (payload.ownerId or "").strip()
         resolved_owner_name = (payload.ownerName or "").strip()
         if not resolved_owner_id:
-            _session_user_for_owner = get_cached_session_user()
+            _session_user_for_owner = workspace_session_user
             if _session_user_for_owner:
                 resolved_owner_id = _session_user_for_owner.id
                 if not resolved_owner_name:
@@ -26507,7 +27426,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 task_id,
-                active_business_sandbox_id(),
+                workspace_context.sandbox_id,
                 payload.title,
                 payload.desc,
                 status,
@@ -26560,7 +27479,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     to_json({"eventType": "created"}),
                 ),
             )
-        session_user_for_collab = get_cached_session_user()
+        session_user_for_collab = workspace_session_user
         collaborator_ids_for_local = list(dict.fromkeys(payload.collaboratorIds or []))
         if resolved_owner_id:
             collaborator_ids_for_local = [
@@ -26608,13 +27527,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     timestamp,
                 ),
             )
-        log_activity("task.create", "task", task_id, payload.model_dump())
-        created_task = fetch_tasks("t.id = ?", (task_id,))[0]
+        log_activity(
+            "task.create",
+            "task",
+            task_id,
+            payload.model_dump(),
+            actor_name=_workspace_actor_name(workspace_context),
+        )
+        created_task = fetch_tasks(
+            "t.id = ?",
+            (task_id,),
+            workspace_context=workspace_context,
+        )[0]
         _safe_data_center_ingest(
             "task",
             lambda: ingest_task_by_id(state.db, state.data_dir, created_task.id),
         )
-        growth_user_id, growth_user_name = resolve_growth_actor()
+        growth_user_id = workspace_context.user_id or str(current_operator_row()["id"])
+        growth_user_name = (
+            workspace_session_user.fullName
+            if workspace_session_user
+            else str(current_operator_row()["name"])
+        )
         ingest_task_growth_candidate(
             state.db,
             user_id=growth_user_id,
@@ -26633,11 +27567,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             scope_id=created_task.id,
             priority="normal",
         )
-        Thread(target=_precompute_task_understanding, args=(created_task.id,), daemon=True).start()
+        Thread(
+            target=_precompute_task_understanding,
+            args=(created_task.id, workspace_context),
+            daemon=True,
+        ).start()
 
         # --- ASYNC CLOUD SYNC: push to cloud in background, never block the user ---
         if has_cloud:
-            session_user = get_cached_session_user()
+            session_user = workspace_session_user
             collaborator_ids = collaborator_ids_for_local or ([session_user.id] if session_user else [])
             owner_id = resolved_owner_id or (collaborator_ids[0] if collaborator_ids else None)
             cloud_payload = {
@@ -27362,17 +28300,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         *,
         analysis: WeeklyReviewAnalysisRecord | None = None,
     ) -> EventLineContextBundleRecord | None:
+        workspace_context = _active_workspace_context_snapshot()
         normalized_event_line_id = _normalize_event_line_reference(event_line_id)
         if not normalized_event_line_id:
             return None
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (normalized_event_line_id,))
-        if not row:
+        try:
+            row = _event_line_in_workspace(normalized_event_line_id, workspace_context)
+        except HTTPException:
             return None
         detail: EventLineDetailRecord
         if get_cloud_token():
             try:
                 payload = cloud_request("GET", f"/api/v1/event-lines/{normalized_event_line_id}")
-                detail = build_cloud_event_line_detail(payload) if isinstance(payload, dict) else build_event_line_detail(row)
+                detail = (
+                    build_cloud_event_line_detail(
+                        payload,
+                        workspace_context=workspace_context,
+                    )
+                    if isinstance(payload, dict)
+                    else build_event_line_detail(row)
+                )
             except HTTPException:
                 detail = build_event_line_detail(row)
         else:
@@ -29793,71 +30740,552 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             }
         )
 
-    # ── Attachment local cache ──
-    def _att_cache_dir() -> Path:
-        d = Path(state.data_dir) / "cache" / "event-line-attachments"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+    # ── Attachment scope + local cache ──
+    @dataclass(frozen=True)
+    class _ScopedAttachmentRef:
+        sandbox_id: str
+        organization_id: str
+        table_name: str | None
+        row: Any | None
+        cloud_context: ScopedCloudContext | None
 
-    def _att_cache_path(attachment_id: str, suffix: str = "") -> Path:
-        """Return cache file path. suffix examples: '', '.thumb', '.text.json', '.ocr.json'"""
-        safe_id = attachment_id.replace("/", "_").replace("..", "_")
-        return _att_cache_dir() / f"{safe_id}{suffix}"
+    @dataclass(frozen=True)
+    class _CloudAttachmentScopeBinding:
+        event_line_id: str
+        organization_id: str
+        cloud_instance_id: str
+        cloud_api_url: str
+        bound_at: float
 
-    def _att_cache_read(attachment_id: str, suffix: str = "") -> bytes | None:
-        p = _att_cache_path(attachment_id, suffix)
-        if p.exists() and p.stat().st_size > 0:
-            return p.read_bytes()
-        return None
+    _attachment_scope_bindings: dict[tuple[str, str], _CloudAttachmentScopeBinding] = {}
+    _attachment_scope_bindings_lock = Lock()
+    _ATTACHMENT_SCOPE_BINDING_TTL_SECONDS = 15 * 60
+    _ATTACHMENT_SCOPE_BINDING_MAX_ITEMS = 4096
+    _ATT_CACHE_SUFFIXES = {"", ".meta", ".thumb", ".text.json", ".ocr.json"}
 
-    def _att_cache_write(attachment_id: str, data: bytes, suffix: str = "") -> None:
-        p = _att_cache_path(attachment_id, suffix)
-        p.write_bytes(data)
+    def _frozen_cloud_context_for_workspace(
+        workspace_context: WorkspaceContext,
+    ) -> ScopedCloudContext | None:
+        """Capture cloud destination and credentials once for the whole request.
+
+        Local legacy workspaces may still point at the configured cloud, but an
+        organization workspace must always use its own persisted URL/session.
+        """
+        if workspace_context.kind == "organization" and workspace_context.organization_id:
+            try:
+                return _scoped_cloud_context_from_workspace(workspace_context)
+            except AsyncJobScopeError:
+                return None
+        cloud_api_url = str(
+            workspace_context.cloud_api_url or state.cloud_api_url or ""
+        ).strip().rstrip("/")
+        if not cloud_api_url or not (
+            workspace_context.access_token or workspace_context.refresh_token
+        ):
+            return None
+        return ScopedCloudContext(
+            sandbox_id=workspace_context.sandbox_id,
+            organization_id="",
+            cloud_api_url=cloud_api_url,
+            access_token=workspace_context.access_token,
+            refresh_token=workspace_context.refresh_token,
+            cloud_instance_id=workspace_context.cloud_instance_id,
+        )
+
+    def _scoped_cloud_raw_response(
+        context: ScopedCloudContext | None,
+        method: str,
+        path: str,
+        *,
+        json_body: dict | None = None,
+        timeout: float,
+    ):
+        """Make a non-JSON cloud request without rereading active workspace state."""
+        if context is None:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        def perform_request(token: str | None):
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            kwargs: dict[str, Any] = {
+                "headers": headers,
+                "timeout": timeout,
+                "follow_redirects": False,
+                "trust_env": False,
+            }
+            if json_body is not None:
+                headers["Content-Type"] = "application/json"
+                kwargs["json"] = json_body
+            url = f"{context.cloud_api_url}{path}"
+            if method.upper() == "GET":
+                return httpx.get(url, **kwargs)
+            if method.upper() == "POST":
+                return httpx.post(url, **kwargs)
+            return _httpx_request_without_proxy(method, url, **kwargs)
+
+        if not context.access_token:
+            _refresh_scoped_cloud_session(context)
+        try:
+            response = perform_request(context.access_token)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Cloud attachment unavailable: {exc}") from exc
+        if response.status_code == 401 and context.refresh_token:
+            _refresh_scoped_cloud_session(context)
+            response = perform_request(context.access_token)
+        if response.status_code == 401:
+            _clear_scoped_cloud_session(context)
+        if 300 <= response.status_code < 400:
+            raise HTTPException(status_code=502, detail="Cloud redirect rejected")
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail="Not found")
+        return response
+
+    def _remember_cloud_attachment_scope(
+        *,
+        workspace_context: WorkspaceContext,
+        attachment_id: str,
+        event_line_id: str,
+    ) -> None:
+        """Bind a cloud-only attachment to an already-authorized local parent.
+
+        This is deliberately not an ID/token allow-list.  The parent event line
+        must exist in the supplied sandbox when binding and is revalidated on
+        every attachment read.  If the desktop has no verifiable parent mapping,
+        cloud-only attachment access remains fail-closed (404, no cloud request).
+        """
+        normalized_sandbox_id = str(workspace_context.sandbox_id or "").strip()
+        normalized_attachment_id = str(attachment_id or "").strip()
+        normalized_event_line_id = str(event_line_id or "").strip()
+        if not normalized_sandbox_id or not normalized_attachment_id or not normalized_event_line_id:
+            return
+        try:
+            _event_line_in_workspace(normalized_event_line_id, workspace_context)
+        except HTTPException:
+            return
+        now = time.monotonic()
+        with _attachment_scope_bindings_lock:
+            expired_before = now - _ATTACHMENT_SCOPE_BINDING_TTL_SECONDS
+            expired_keys = [
+                key for key, binding in _attachment_scope_bindings.items()
+                if binding.bound_at < expired_before
+            ]
+            for key in expired_keys:
+                _attachment_scope_bindings.pop(key, None)
+            if len(_attachment_scope_bindings) >= _ATTACHMENT_SCOPE_BINDING_MAX_ITEMS:
+                oldest_key = min(
+                    _attachment_scope_bindings,
+                    key=lambda key: _attachment_scope_bindings[key].bound_at,
+                )
+                _attachment_scope_bindings.pop(oldest_key, None)
+            _attachment_scope_bindings[(normalized_sandbox_id, normalized_attachment_id)] = (
+                _CloudAttachmentScopeBinding(
+                    event_line_id=normalized_event_line_id,
+                    organization_id=str(workspace_context.organization_id or "").strip(),
+                    cloud_instance_id=str(workspace_context.cloud_instance_id or "").strip(),
+                    cloud_api_url=str(workspace_context.cloud_api_url or "").strip().rstrip("/"),
+                    bound_at=now,
+                )
+            )
+
+    def _cloud_attachment_scope_binding(
+        *,
+        workspace_context: WorkspaceContext,
+        attachment_id: str,
+    ) -> _CloudAttachmentScopeBinding | None:
+        key = (
+            str(workspace_context.sandbox_id or "").strip(),
+            str(attachment_id or "").strip(),
+        )
+        now = time.monotonic()
+        with _attachment_scope_bindings_lock:
+            binding = _attachment_scope_bindings.get(key)
+            if binding is None:
+                return None
+            if now - binding.bound_at > _ATTACHMENT_SCOPE_BINDING_TTL_SECONDS:
+                _attachment_scope_bindings.pop(key, None)
+                return None
+            if (
+                binding.organization_id != str(workspace_context.organization_id or "").strip()
+                or binding.cloud_instance_id != str(workspace_context.cloud_instance_id or "").strip()
+                or binding.cloud_api_url
+                != str(workspace_context.cloud_api_url or "").strip().rstrip("/")
+            ):
+                _attachment_scope_bindings.pop(key, None)
+                return None
+            return binding
+
+    def _event_line_in_workspace(event_line_id: str, workspace_context: WorkspaceContext):
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Event line not found")
+        row = state.db.fetchone(
+            """
+            SELECT e.*
+            FROM event_lines e
+            JOIN sandboxes s ON s.id = e.sandbox_id
+            WHERE (e.id = ? OR e.cloud_id = ?)
+              AND COALESCE(e.sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+              AND (? = '' OR COALESCE(e.organization_id, '') IN ('', ?))
+            ORDER BY e.updated_at DESC
+            LIMIT 1
+            """,
+            (
+                event_line_id,
+                event_line_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Event line not found")
+        return row
+
+    def _attachment_row_matches_workspace(
+        table_name: str,
+        row: Any,
+        workspace_context: WorkspaceContext,
+    ) -> bool:
+        try:
+            if table_name == "event_line_attachments":
+                _event_line_in_workspace(str(row["event_line_id"] or ""), workspace_context)
+            else:
+                client_id = str(row["client_id"] or "").strip()
+                if not client_id:
+                    return False
+                client_row = require_client_in_workspace(client_id, workspace_context)
+
+                task_id = str(row["task_id"] or "").strip()
+                if not task_id:
+                    return False
+                try:
+                    require_task_in_workspace(task_id, workspace_context)
+                except HTTPException:
+                    any_task = state.db.fetchone(
+                        """
+                        SELECT id
+                        FROM tasks
+                        WHERE (id = ? OR cloud_id = ?)
+                          AND COALESCE(sandbox_id, '') = ?
+                        LIMIT 1
+                        """,
+                        (task_id, task_id, workspace_context.sandbox_id),
+                    )
+                    if not any_task:
+                        any_task = state.db.fetchone(
+                            """
+                            SELECT id
+                            FROM tasks
+                            WHERE (id = ? OR cloud_id = ?)
+                              AND COALESCE(sandbox_id, '') <> ?
+                            LIMIT 1
+                            """,
+                            (task_id, task_id, workspace_context.sandbox_id),
+                        )
+                    # Local attachments require a local task.  Cloud-shadow
+                    # attachments may predate their task shadow, but only when
+                    # their client (and optional event line) is locally scoped.
+                    if table_name == "task_attachments" or any_task:
+                        return False
+
+                event_line_id = str(row["event_line_id"] or "").strip()
+                if event_line_id:
+                    _event_line_in_workspace(event_line_id, workspace_context)
+
+            document_id = (
+                str(row["document_id"] or "").strip()
+                if "document_id" in row.keys()
+                else ""
+            )
+            if document_id:
+                local_document = state.db.fetchone(
+                    "SELECT client_id FROM documents WHERE id = ? LIMIT 1",
+                    (document_id,),
+                )
+                if local_document:
+                    expected_client_id = (
+                        str(client_row["id"] or "").strip()
+                        if table_name != "event_line_attachments"
+                        else ""
+                    )
+                    scoped_document = state.db.fetchone(
+                        """
+                        SELECT d.id
+                        FROM documents d
+                        JOIN clients c ON c.id = d.client_id
+                        JOIN sandboxes s ON s.id = c.sandbox_id
+                        WHERE d.id = ?
+                          AND COALESCE(c.sandbox_id, '') = ?
+                          AND (? = '' OR d.client_id = ?)
+                          AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                        LIMIT 1
+                        """,
+                        (
+                            document_id,
+                            workspace_context.sandbox_id,
+                            expected_client_id,
+                            expected_client_id,
+                            workspace_context.organization_id,
+                            workspace_context.organization_id,
+                        ),
+                    )
+                    if not scoped_document:
+                        return False
+            return True
+        except HTTPException:
+            return False
+
+    def _attachment_targets_match_workspace(
+        client_id: str,
+        event_line_id: str | None,
+        workspace_context: WorkspaceContext,
+    ) -> bool:
+        """Authorize both destination parents before an attachment re-home mutates state."""
+        try:
+            require_client_in_workspace(client_id, workspace_context)
+            if event_line_id:
+                _event_line_in_workspace(event_line_id, workspace_context)
+            return True
+        except HTTPException:
+            return False
+
+    def _require_attachment_in_workspace(
+        attachment_id: str,
+        workspace_context: WorkspaceContext,
+    ) -> _ScopedAttachmentRef:
+        normalized_attachment_id = str(attachment_id or "").strip()
+        if not normalized_attachment_id:
+            raise HTTPException(status_code=404, detail="Attachment not found")
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Attachment not found")
+
+        for table_name in (
+            "task_attachments",
+            "task_attachments_cloud",
+            "event_line_attachments",
+        ):
+            row = state.db.fetchone(
+                f"SELECT * FROM {table_name} WHERE id = ? LIMIT 1",
+                (normalized_attachment_id,),
+            )
+            if row and _attachment_row_matches_workspace(table_name, row, workspace_context):
+                return _ScopedAttachmentRef(
+                    sandbox_id=workspace_context.sandbox_id,
+                    organization_id=workspace_context.organization_id,
+                    table_name=table_name,
+                    row=row,
+                    cloud_context=_frozen_cloud_context_for_workspace(workspace_context),
+                )
+
+        binding = _cloud_attachment_scope_binding(
+            workspace_context=workspace_context,
+            attachment_id=normalized_attachment_id,
+        )
+        if binding is not None:
+            try:
+                _event_line_in_workspace(binding.event_line_id, workspace_context)
+            except HTTPException:
+                binding = None
+        if binding is not None:
+            return _ScopedAttachmentRef(
+                sandbox_id=workspace_context.sandbox_id,
+                organization_id=workspace_context.organization_id,
+                table_name=None,
+                row=None,
+                cloud_context=_frozen_cloud_context_for_workspace(workspace_context),
+            )
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    def _require_attachment_in_active_sandbox(attachment_id: str) -> _ScopedAttachmentRef:
+        return _require_attachment_in_workspace(
+            attachment_id,
+            _active_workspace_context_snapshot(),
+        )
+
+    def _att_cache_components(*, sandbox_id: str, attachment_id: str, suffix: str = "") -> tuple[str, str]:
+        normalized_sandbox_id = str(sandbox_id or "").strip()
+        if not normalized_sandbox_id:
+            raise ValueError("sandbox_id is required for attachment cache access")
+        if suffix not in _ATT_CACHE_SUFFIXES:
+            raise ValueError("unsupported attachment cache suffix")
+        normalized_attachment_id = str(attachment_id or "").strip()
+        if not normalized_attachment_id:
+            raise ValueError("attachment_id is required for attachment cache access")
+        scope_component = hashlib.sha256(normalized_sandbox_id.encode("utf-8")).hexdigest()
+        attachment_component = hashlib.sha256(normalized_attachment_id.encode("utf-8")).hexdigest()
+        return scope_component, f"{attachment_component}{suffix}"
+
+    def _att_cache_scope_dir_fd(*, scope_component: str) -> int:
+        """Open the scoped cache directory without following any symlink.
+
+        Keeping an fd for each path component closes the check/use gap that a
+        Path.resolve()-then-open sequence leaves in parent directories.
+        """
+        no_follow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        if not no_follow or not directory_flag:
+            raise OSError("secure attachment cache flags are unavailable")
+        data_root = Path(state.data_dir).resolve()
+        current_fd = os.open(data_root, os.O_RDONLY | directory_flag)
+        try:
+            for component in ("cache", "event-line-attachments", "scoped", scope_component):
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(
+                    component,
+                    os.O_RDONLY | directory_flag | no_follow,
+                    dir_fd=current_fd,
+                )
+                directory_stat = os.fstat(next_fd)
+                if (
+                    not stat.S_ISDIR(directory_stat.st_mode)
+                    or directory_stat.st_uid != os.getuid()
+                    or directory_stat.st_mode & 0o022
+                ):
+                    os.close(next_fd)
+                    raise OSError("unsafe attachment cache directory")
+                os.close(current_fd)
+                current_fd = next_fd
+            return current_fd
+        except Exception:
+            os.close(current_fd)
+            raise
+
+    def _att_cache_read(*, sandbox_id: str, attachment_id: str, suffix: str = "") -> bytes | None:
+        scope_fd: int | None = None
+        file_fd: int | None = None
+        try:
+            scope_component, file_name = _att_cache_components(
+                sandbox_id=sandbox_id,
+                attachment_id=attachment_id,
+                suffix=suffix,
+            )
+            scope_fd = _att_cache_scope_dir_fd(scope_component=scope_component)
+            file_fd = os.open(
+                file_name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=scope_fd,
+            )
+            file_stat = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or file_stat.st_nlink != 1
+                or file_stat.st_size <= 0
+            ):
+                return None
+            with os.fdopen(file_fd, "rb", closefd=False) as handle:
+                return handle.read()
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        finally:
+            if file_fd is not None:
+                os.close(file_fd)
+            if scope_fd is not None:
+                os.close(scope_fd)
+
+    def _att_cache_write(
+        *,
+        sandbox_id: str,
+        attachment_id: str,
+        data: bytes,
+        suffix: str = "",
+    ) -> None:
+        scope_fd: int | None = None
+        temp_fd: int | None = None
+        temp_name = ""
+        try:
+            scope_component, file_name = _att_cache_components(
+                sandbox_id=sandbox_id,
+                attachment_id=attachment_id,
+                suffix=suffix,
+            )
+            scope_fd = _att_cache_scope_dir_fd(scope_component=scope_component)
+            temp_name = f".{file_name}.{uuid4().hex}.tmp"
+            temp_fd = os.open(
+                temp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=scope_fd,
+            )
+            with os.fdopen(temp_fd, "wb", closefd=False) as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(temp_fd)
+            os.close(temp_fd)
+            temp_fd = None
+            # Atomic directory-entry replacement never follows a pre-existing
+            # symlink or hardlink at the destination.
+            os.replace(
+                temp_name,
+                file_name,
+                src_dir_fd=scope_fd,
+                dst_dir_fd=scope_fd,
+            )
+            temp_name = ""
+        except (OSError, ValueError) as exc:
+            logger.warning("attachment cache write skipped: %s", exc)
+        finally:
+            if temp_fd is not None:
+                os.close(temp_fd)
+            if scope_fd is not None:
+                if temp_name:
+                    try:
+                        os.unlink(temp_name, dir_fd=scope_fd)
+                    except OSError:
+                        pass
+                os.close(scope_fd)
 
     @app.get("/api/public/task-attachments/{attachment_id}")
     def proxy_cloud_task_attachment(attachment_id: str) -> Response:
-        def _local_attachment_file() -> tuple[Path, str, str] | None:
-            lookups = [
-                ("task_attachments", "title", "path", "kind", "mime_type"),
-                ("task_attachments_cloud", "title", "path", "kind", "mime_type"),
-                ("event_line_attachments", "file_name", "local_path", "file_type", ""),
-            ]
-            for table, title_col, path_col, kind_col, mime_col in lookups:
-                try:
-                    row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
-                except Exception:
-                    row = None
-                if not row:
-                    continue
-                raw_path = str(row[path_col] or "").strip()
-                if not raw_path:
-                    continue
-                candidate = Path(raw_path)
-                if not candidate.is_absolute():
-                    candidate = Path(state.data_dir) / raw_path
-                if not candidate.exists() or not candidate.is_file():
-                    continue
-                title = str(row[title_col] or candidate.name)
-                mime = str(row[mime_col] or "") if mime_col and mime_col in row.keys() else ""
-                if not mime:
-                    import mimetypes as _mimetypes
-                    mime = _mimetypes.guess_type(title or str(candidate))[0] or "application/octet-stream"
-                kind = str(row[kind_col] or "")
-                return candidate, mime, title or kind or candidate.name
-            return None
+        attachment_scope = _require_attachment_in_active_sandbox(attachment_id)
 
-        # Check local cache first
-        cached = _att_cache_read(attachment_id)
+        def _local_attachment_file() -> tuple[Path, str, str] | None:
+            table_name = attachment_scope.table_name
+            row = attachment_scope.row
+            if table_name is None or row is None:
+                return None
+            columns = {
+                "task_attachments": ("title", "path", "kind", "mime_type"),
+                "task_attachments_cloud": ("title", "path", "kind", "mime_type"),
+                "event_line_attachments": ("file_name", "local_path", "file_type", ""),
+            }
+            title_col, path_col, kind_col, mime_col = columns[table_name]
+            raw_path = str(row[path_col] or "").strip()
+            if not raw_path:
+                return None
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = Path(state.data_dir) / raw_path
+            if not candidate.exists() or not candidate.is_file():
+                return None
+            title = str(row[title_col] or candidate.name)
+            mime = str(row[mime_col] or "") if mime_col and mime_col in row.keys() else ""
+            if not mime:
+                import mimetypes as _mimetypes
+                mime = _mimetypes.guess_type(title or str(candidate))[0] or "application/octet-stream"
+            kind = str(row[kind_col] or "")
+            return candidate, mime, title or kind or candidate.name
+
+        cached = _att_cache_read(
+            sandbox_id=attachment_scope.sandbox_id,
+            attachment_id=attachment_id,
+        )
         if cached:
-            # Guess content type from cached metadata
-            meta_path = _att_cache_path(attachment_id, ".meta")
             ct = "application/octet-stream"
             cd = ""
-            if meta_path.exists():
+            meta = _att_cache_read(
+                sandbox_id=attachment_scope.sandbox_id,
+                attachment_id=attachment_id,
+                suffix=".meta",
+            )
+            if meta:
                 try:
-                    meta = json.loads(meta_path.read_text())
-                    ct = meta.get("content_type", ct)
-                    cd = meta.get("content_disposition", "")
+                    meta_payload = json.loads(meta)
+                    ct = meta_payload.get("content_type", ct)
+                    cd = meta_payload.get("content_disposition", "")
                 except Exception:
                     pass
             headers = {}
@@ -29874,25 +31302,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 headers={"Content-Disposition": f'attachment; filename="{quote(title)}"'},
             )
 
-        if not get_cloud_token():
-            raise HTTPException(status_code=404, detail="Attachment not found")
         try:
-            token = get_cloud_token()
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            resp = httpx.get(
-                f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}",
-                headers=headers,
+            resp = _scoped_cloud_raw_response(
+                attachment_scope.cloud_context,
+                "GET",
+                f"/api/public/task-attachments/{attachment_id}",
                 timeout=30.0,
-                follow_redirects=True,
-                trust_env=False,
             )
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=resp.status_code, detail="Attachment not found")
             content_type = resp.headers.get("content-type", "application/octet-stream")
             content_disposition = resp.headers.get("content-disposition", "")
-            # Write to cache
-            _att_cache_write(attachment_id, resp.content)
-            _att_cache_write(attachment_id, json.dumps({"content_type": content_type, "content_disposition": content_disposition}).encode(), suffix=".meta")
+            _att_cache_write(
+                sandbox_id=attachment_scope.sandbox_id,
+                attachment_id=attachment_id,
+                data=resp.content,
+            )
+            _att_cache_write(
+                sandbox_id=attachment_scope.sandbox_id,
+                attachment_id=attachment_id,
+                data=json.dumps({"content_type": content_type, "content_disposition": content_disposition}).encode(),
+                suffix=".meta",
+            )
             response_headers = {}
             if content_disposition:
                 response_headers["Content-Disposition"] = content_disposition
@@ -29902,87 +31331,122 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/public/task-attachments/{attachment_id}/thumbnail")
     def proxy_cloud_attachment_thumbnail(attachment_id: str) -> Response:
-        cached = _att_cache_read(attachment_id, ".thumb")
+        attachment_scope = _require_attachment_in_active_sandbox(attachment_id)
+        cached = _att_cache_read(
+            sandbox_id=attachment_scope.sandbox_id,
+            attachment_id=attachment_id,
+            suffix=".thumb",
+        )
         if cached:
             return Response(content=cached, media_type="image/jpeg")
 
-        if not get_cloud_token():
-            raise HTTPException(status_code=404, detail="Not found")
         try:
-            resp = httpx.get(
-                f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/thumbnail",
+            resp = _scoped_cloud_raw_response(
+                attachment_scope.cloud_context,
+                "GET",
+                f"/api/public/task-attachments/{attachment_id}/thumbnail",
                 timeout=15.0,
-                trust_env=False,
             )
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=resp.status_code, detail="Not found")
-            _att_cache_write(attachment_id, resp.content, suffix=".thumb")
+            _att_cache_write(
+                sandbox_id=attachment_scope.sandbox_id,
+                attachment_id=attachment_id,
+                data=resp.content,
+                suffix=".thumb",
+            )
             return Response(content=resp.content, media_type=resp.headers.get("content-type", "image/jpeg"))
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Thumbnail unavailable: {exc}") from exc
 
     @app.get("/api/public/task-attachments/{attachment_id}/text-content")
     def proxy_cloud_attachment_text(attachment_id: str) -> dict:
+        attachment_scope = _require_attachment_in_active_sandbox(attachment_id)
+
         def _local_text_content() -> dict | None:
-            for table, title_col, path_col, kind_col in (
-                ("task_attachments", "title", "path", "kind"),
-                ("task_attachments_cloud", "title", "path", "kind"),
-                ("event_line_attachments", "file_name", "local_path", "file_type"),
-            ):
-                try:
-                    row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
-                except Exception:
-                    row = None
-                if not row:
-                    continue
-                title = str(row[title_col] or "附件")
-                document_id = str(row["document_id"] or "").strip() if "document_id" in row.keys() else ""
-                if document_id:
-                    v2_row = state.db.fetchone(
-                        """
-                        SELECT preview_text, markdown_content, markdown_path
-                        FROM v2_documents
-                        WHERE document_id = ?
-                        LIMIT 1
-                        """,
-                        (document_id,),
-                    )
-                    if v2_row:
-                        text = str(v2_row["preview_text"] or v2_row["markdown_content"] or "").strip()
-                        if not text and v2_row["markdown_path"]:
-                            try:
-                                markdown_path = Path(str(v2_row["markdown_path"]))
-                                if markdown_path.exists() and markdown_path.is_file():
-                                    text = markdown_path.read_text(encoding="utf-8", errors="ignore")
-                            except Exception:
-                                text = ""
-                        if text:
-                            return {"title": title, "kind": str(row[kind_col] or ""), "text": text[:5000], "paragraphCount": text.count("\n") + 1}
-                    doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (document_id,))
-                    if doc_row and doc_row["excerpt"]:
-                        text = str(doc_row["excerpt"])
+            table_name = attachment_scope.table_name
+            row = attachment_scope.row
+            if table_name is None or row is None:
+                return None
+            columns = {
+                "task_attachments": ("title", "path", "kind"),
+                "task_attachments_cloud": ("title", "path", "kind"),
+                "event_line_attachments": ("file_name", "local_path", "file_type"),
+            }
+            title_col, path_col, kind_col = columns[table_name]
+            title = str(row[title_col] or "附件")
+            document_id = str(row["document_id"] or "").strip() if "document_id" in row.keys() else ""
+            if document_id:
+                v2_row = state.db.fetchone(
+                    """
+                    SELECT v.preview_text, v.markdown_content, v.markdown_path
+                    FROM v2_documents v
+                    JOIN documents d ON d.id = v.document_id AND d.client_id = v.client_id
+                    JOIN clients c ON c.id = v.client_id
+                    JOIN sandboxes s ON s.id = c.sandbox_id
+                    WHERE v.document_id = ?
+                      AND COALESCE(c.sandbox_id, '') = ?
+                      AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                    LIMIT 1
+                    """,
+                    (
+                        document_id,
+                        attachment_scope.sandbox_id,
+                        attachment_scope.organization_id,
+                        attachment_scope.organization_id,
+                    ),
+                )
+                if v2_row:
+                    text = str(v2_row["preview_text"] or v2_row["markdown_content"] or "").strip()
+                    if not text and v2_row["markdown_path"]:
+                        try:
+                            markdown_path = Path(str(v2_row["markdown_path"]))
+                            if markdown_path.exists() and markdown_path.is_file():
+                                text = markdown_path.read_text(encoding="utf-8", errors="ignore")
+                        except Exception:
+                            text = ""
+                    if text:
                         return {"title": title, "kind": str(row[kind_col] or ""), "text": text[:5000], "paragraphCount": text.count("\n") + 1}
-                raw_path = str(row[path_col] or "").strip()
-                candidate = Path(raw_path)
-                if raw_path and not candidate.is_absolute():
-                    candidate = Path(state.data_dir) / raw_path
-                if raw_path and candidate.exists() and candidate.is_file():
-                    kind = str(row[kind_col] or "").lower()
-                    try:
-                        if kind == "docx" or title.lower().endswith(".docx"):
-                            from docx import Document as _WordDoc
-                            doc = _WordDoc(str(candidate))
-                            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()][:100]
-                            return {"title": title, "kind": kind or "docx", "text": "\n".join(paragraphs), "paragraphCount": len(paragraphs)}
-                        if kind in {"md", "txt", "csv", "json"} or title.lower().endswith((".md", ".txt", ".csv", ".json")):
-                            text = candidate.read_text(encoding="utf-8", errors="ignore")[:5000]
-                            return {"title": title, "kind": kind, "text": text, "paragraphCount": text.count("\n") + 1}
-                    except Exception as exc:
-                        return {"title": title, "kind": kind, "text": f"内容提取失败: {exc}", "paragraphCount": 0}
-                return {"title": title, "kind": str(row[kind_col] or ""), "text": "", "paragraphCount": 0, "unsupported": True}
+                doc_row = state.db.fetchone(
+                    """
+                    SELECT d.excerpt
+                    FROM documents d
+                    JOIN clients c ON c.id = d.client_id
+                    WHERE d.id = ? AND COALESCE(c.sandbox_id, '') = ?
+                    LIMIT 1
+                    """,
+                    (document_id, attachment_scope.sandbox_id),
+                )
+                if doc_row and doc_row["excerpt"]:
+                    text = str(doc_row["excerpt"])
+                    return {"title": title, "kind": str(row[kind_col] or ""), "text": text[:5000], "paragraphCount": text.count("\n") + 1}
+            raw_path = str(row[path_col] or "").strip()
+            candidate = Path(raw_path)
+            if raw_path and not candidate.is_absolute():
+                candidate = Path(state.data_dir) / raw_path
+            if raw_path and candidate.exists() and candidate.is_file():
+                kind = str(row[kind_col] or "").lower()
+                try:
+                    if kind == "docx" or title.lower().endswith(".docx"):
+                        from docx import Document as _WordDoc
+                        doc = _WordDoc(str(candidate))
+                        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()][:100]
+                        return {"title": title, "kind": kind or "docx", "text": "\n".join(paragraphs), "paragraphCount": len(paragraphs)}
+                    if kind in {"md", "txt", "csv", "json"} or title.lower().endswith((".md", ".txt", ".csv", ".json")):
+                        text = candidate.read_text(encoding="utf-8", errors="ignore")[:5000]
+                        return {"title": title, "kind": kind, "text": text, "paragraphCount": text.count("\n") + 1}
+                except Exception as exc:
+                    return {"title": title, "kind": kind, "text": f"内容提取失败: {exc}", "paragraphCount": 0}
+                return {"title": title, "kind": kind, "text": "", "paragraphCount": 0, "unsupported": True}
+            # A scoped database reference without local bytes is only an
+            # authorization anchor.  Let the authenticated cloud proxy provide
+            # the content instead of turning the empty shadow row into a false
+            # successful response.
             return None
 
-        cached = _att_cache_read(attachment_id, ".text.json")
+        cached = _att_cache_read(
+            sandbox_id=attachment_scope.sandbox_id,
+            attachment_id=attachment_id,
+            suffix=".text.json",
+        )
         if cached:
             try:
                 data = json.loads(cached)
@@ -29997,28 +31461,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if local_text is not None:
             return local_text
 
-        if not get_cloud_token():
-            raise HTTPException(status_code=404, detail="Not found")
         try:
-            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/text-content", timeout=15.0, trust_env=False)
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=resp.status_code, detail="Not found")
+            resp = _scoped_cloud_raw_response(
+                attachment_scope.cloud_context,
+                "GET",
+                f"/api/public/task-attachments/{attachment_id}/text-content",
+                timeout=15.0,
+            )
             result = resp.json()
             # Cache successful extractions
             text = str(result.get("text", ""))
             if text and "提取失败" not in text and "No module" not in text:
-                _att_cache_write(attachment_id, json.dumps(result, ensure_ascii=False).encode("utf-8"), suffix=".text.json")
+                _att_cache_write(
+                    sandbox_id=attachment_scope.sandbox_id,
+                    attachment_id=attachment_id,
+                    data=json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                    suffix=".text.json",
+                )
             return result
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Text content unavailable: {exc}") from exc
 
     @app.get("/api/public/task-attachments/{attachment_id}/ocr-summary")
     def proxy_cloud_attachment_ocr(attachment_id: str) -> dict:
+        attachment_scope = _require_attachment_in_active_sandbox(attachment_id)
+
         def _is_good_ocr(data: dict) -> bool:
             s = str(data.get("summary", ""))
             return bool(s) and not data.get("unsupported") and "识别失败" not in s and "不可用" not in s and "未登录" not in s
 
-        cached = _att_cache_read(attachment_id, ".ocr.json")
+        cached = _att_cache_read(
+            sandbox_id=attachment_scope.sandbox_id,
+            attachment_id=attachment_id,
+            suffix=".ocr.json",
+        )
         if cached:
             try:
                 data = json.loads(cached)
@@ -30027,57 +31503,70 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
 
-        for table, title_col in (
-            ("task_attachments", "title"),
-            ("task_attachments_cloud", "title"),
-            ("event_line_attachments", "file_name"),
-        ):
-            try:
-                row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ?", (attachment_id,))
-            except Exception:
-                row = None
-            if not row:
-                continue
+        row = attachment_scope.row
+        table_name = attachment_scope.table_name
+        if row is not None and table_name is not None:
+            title_col = "file_name" if table_name == "event_line_attachments" else "title"
             title = str(row[title_col] or "")
             document_id = str(row["document_id"] or "").strip() if "document_id" in row.keys() else ""
             if document_id:
-                v2_row = state.db.fetchone("SELECT preview_text, markdown_content FROM v2_documents WHERE document_id = ? LIMIT 1", (document_id,))
+                v2_row = state.db.fetchone(
+                    """
+                    SELECT v.preview_text, v.markdown_content
+                    FROM v2_documents v
+                    JOIN documents d ON d.id = v.document_id AND d.client_id = v.client_id
+                    JOIN clients c ON c.id = v.client_id
+                    JOIN sandboxes s ON s.id = c.sandbox_id
+                    WHERE v.document_id = ?
+                      AND COALESCE(c.sandbox_id, '') = ?
+                      AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                    LIMIT 1
+                    """,
+                    (
+                        document_id,
+                        attachment_scope.sandbox_id,
+                        attachment_scope.organization_id,
+                        attachment_scope.organization_id,
+                    ),
+                )
                 preview = str(v2_row["preview_text"] or v2_row["markdown_content"] or "").strip() if v2_row else ""
                 if preview:
                     return {"title": title, "summary": preview[:1200], "source": "data_center"}
-            break
 
-        if not get_cloud_token():
+        if attachment_scope.cloud_context is None:
             return {"title": "", "summary": "未登录", "unsupported": True}
         try:
-            resp = httpx.get(f"{cloud_api_base_url()}/api/public/task-attachments/{attachment_id}/ocr-summary", timeout=20.0, trust_env=False)
-            if resp.status_code >= 400:
-                return {"title": "", "summary": "OCR 不可用"}
+            resp = _scoped_cloud_raw_response(
+                attachment_scope.cloud_context,
+                "GET",
+                f"/api/public/task-attachments/{attachment_id}/ocr-summary",
+                timeout=20.0,
+            )
             result = resp.json()
             if _is_good_ocr(result):
-                _att_cache_write(attachment_id, json.dumps(result, ensure_ascii=False).encode("utf-8"), suffix=".ocr.json")
+                _att_cache_write(
+                    sandbox_id=attachment_scope.sandbox_id,
+                    attachment_id=attachment_id,
+                    data=json.dumps(result, ensure_ascii=False).encode("utf-8"),
+                    suffix=".ocr.json",
+                )
             return result
         except Exception:
             return {"title": "", "summary": "OCR 不可用"}
 
     @app.post("/api/v1/event-lines/{event_line_id}/attachments/download-zip")
     def proxy_event_line_zip(event_line_id: str, payload: dict | None = None) -> Response:
-        row = require_event_line_in_active_sandbox(event_line_id)
+        workspace_context = _active_workspace_context_snapshot()
+        row = _event_line_in_workspace(event_line_id, workspace_context)
         cloud_event_line_id = str(row["cloud_id"] or row["id"])
-        if not get_cloud_token():
-            raise HTTPException(status_code=400, detail="需要登录云端")
-        token = get_cloud_token()
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {}
         try:
-            resp = httpx.post(
-                f"{cloud_api_base_url()}/api/v1/event-lines/{cloud_event_line_id}/attachments/download-zip",
-                headers=headers,
-                json=payload or {},
+            resp = _scoped_cloud_raw_response(
+                _frozen_cloud_context_for_workspace(workspace_context),
+                "POST",
+                f"/api/v1/event-lines/{cloud_event_line_id}/attachments/download-zip",
+                json_body=payload or {},
                 timeout=60.0,
-                trust_env=False,
             )
-            if resp.status_code >= 400:
-                raise HTTPException(status_code=resp.status_code, detail="下载失败")
             return Response(
                 content=resp.content,
                 media_type="application/zip",
@@ -31006,7 +32495,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         """
         from app.modules.client import get_client_fact_view
 
-        view = get_client_fact_view(state.db)
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
+        view = get_client_fact_view(
+            state.db,
+            sandbox_id=workspace_context.sandbox_id,
+            organization_id=workspace_context.organization_id,
+        )
         if lite:
             bundle = view.get_fact_bundle_lite(client_id)
         else:
@@ -31045,7 +32540,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     # 现改成: 生成时写本地镜像 + 推云端(线上混合); 打开时本地优先读镜像(断网可读
     # 上次版本, 被动更新不每次拉云); 只有手动 regenerate 才刷新。共同澄清仍走云端(多人协同)。
 
-    def _save_narrative_mirror(client_id: str, record: dict, source: str) -> None:
+    def _save_narrative_mirror(
+        client_id: str,
+        record: dict,
+        source: str,
+        workspace_context: WorkspaceContext,
+    ) -> None:
         """把整段叙事 record 镜像到本地, 供 GET 本地优先读取。dimensions 为空则不写(避免空壳覆盖)。"""
         if not isinstance(record, dict) or not record.get("dimensions"):
             return
@@ -31053,7 +32553,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """INSERT INTO client_narrative_local_mirror(
                    client_id, rev, generator, model_name, generated_at,
                    overall_confidence, open_clarifications_count, record_json, source, mirrored_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?)
+               )
+               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+               FROM clients c
+               JOIN sandboxes s ON s.id = c.sandbox_id
+               WHERE c.id = ?
+                 AND COALESCE(c.sandbox_id, '') = ?
+                 AND (? = '' OR COALESCE(s.organization_id, '') = ?)
                ON CONFLICT(client_id) DO UPDATE SET
                    rev=excluded.rev, generator=excluded.generator, model_name=excluded.model_name,
                    generated_at=excluded.generated_at, overall_confidence=excluded.overall_confidence,
@@ -31070,15 +32576,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 json.dumps(record, ensure_ascii=False),
                 source,
                 now_iso(),
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
             ),
         )
 
     @app.get("/api/v1/clients/{client_id}/narrative")
     def get_client_narrative_proxy(client_id: str) -> dict:
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
         # 本地优先: 有镜像直接返回(断网/慢网可读上次版本, 不每次打开拉云)
         mirror = state.db.fetchone(
-            "SELECT record_json FROM client_narrative_local_mirror WHERE client_id = ?",
-            (client_id,),
+            """SELECT m.record_json
+               FROM client_narrative_local_mirror m
+               JOIN clients c ON c.id = m.client_id
+               JOIN sandboxes s ON s.id = c.sandbox_id
+               WHERE m.client_id = ?
+                 AND COALESCE(c.sandbox_id, '') = ?
+                 AND (? = '' OR COALESCE(s.organization_id, '') = ?)""",
+            (
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         if mirror and mirror["record_json"]:
             try:
@@ -31086,13 +32609,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             except Exception:
                 pass
         # 本地还没镜像(首次/跨设备) → 拉云端 seed 并落镜像; 云端不可达则抛错, 前端按"暂无叙事"处理
-        record = cloud_request(
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context is None:
+            raise HTTPException(status_code=503, detail="当前工作空间没有可用的组织云会话")
+        record = scoped_cloud_request(
+            cloud_context,
             "GET",
             f"/api/v1/clients/{client_id}/narrative",
             timeout=10.0,
         )
         try:
-            _save_narrative_mirror(client_id, record, "cloud")
+            _save_narrative_mirror(client_id, record, "cloud", workspace_context)
         except Exception:
             pass
         return record
@@ -31104,9 +32631,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         判定: 本地 narrative_stale_signals.marked_at > 云端 narrative.generatedAt
         前端 useEffect 检测到 isStale 后自动后台触发 regenerate.
         """
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
         row = state.db.fetchone(
-            "SELECT marked_at, last_doc_title, reason FROM narrative_stale_signals WHERE client_id = ?",
-            (client_id,),
+            """SELECT n.marked_at, n.last_doc_title, n.reason
+               FROM narrative_stale_signals n
+               JOIN clients c ON c.id = n.client_id
+               JOIN sandboxes s ON s.id = c.sandbox_id
+               WHERE n.client_id = ?
+                 AND COALESCE(c.sandbox_id, '') = ?
+                 AND (? = '' OR COALESCE(s.organization_id, '') = ?)""",
+            (
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         marked_at = (row["marked_at"] if row else "") or ""
         last_doc_title = (row["last_doc_title"] if row else "") or ""
@@ -31114,8 +32654,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         # 本地优先(5/29): 用本地镜像的 generated_at 比对, 不再每次 stale-status 都打云端
         mrow = state.db.fetchone(
-            "SELECT generated_at FROM client_narrative_local_mirror WHERE client_id = ?",
-            (client_id,),
+            """SELECT m.generated_at
+               FROM client_narrative_local_mirror m
+               JOIN clients c ON c.id = m.client_id
+               JOIN sandboxes s ON s.id = c.sandbox_id
+               WHERE m.client_id = ?
+                 AND COALESCE(c.sandbox_id, '') = ?
+                 AND (? = '' OR COALESCE(s.organization_id, '') = ?)""",
+            (
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         narrative_generated_at = (mrow["generated_at"] if mrow else "") or ""
 
@@ -31131,9 +32682,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/narrative/stale-clear")
     def clear_narrative_stale(client_id: str) -> dict:
         """重生 narrative 成功后由前端调用, 清掉 stale 标记."""
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
         state.db.execute(
-            "DELETE FROM narrative_stale_signals WHERE client_id = ?",
-            (client_id,),
+            """DELETE FROM narrative_stale_signals
+               WHERE client_id = ?
+                 AND EXISTS (
+                     SELECT 1
+                     FROM clients c
+                     JOIN sandboxes s ON s.id = c.sandbox_id
+                     WHERE c.id = narrative_stale_signals.client_id
+                       AND COALESCE(c.sandbox_id, '') = ?
+                       AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                 )""",
+            (
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
         return {"ok": True}
 
@@ -31695,7 +33262,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/clients/{client_id}/narrative/clarifications")
     def list_client_narrative_clarifications_proxy(client_id: str) -> dict:
-        return cloud_request(
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context is None:
+            raise HTTPException(status_code=503, detail="当前工作空间没有可用的组织云会话")
+        return scoped_cloud_request(
+            cloud_context,
             "GET",
             f"/api/v1/clients/{client_id}/narrative/clarifications",
             timeout=10.0,
@@ -31703,7 +33276,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/v1/clients/{client_id}/narrative/clarifications")
     def add_client_narrative_clarification_proxy(client_id: str, payload: dict) -> dict:
-        return cloud_request(
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context is None:
+            raise HTTPException(status_code=503, detail="当前工作空间没有可用的组织云会话")
+        return scoped_cloud_request(
+            cloud_context,
             "POST",
             f"/api/v1/clients/{client_id}/narrative/clarifications",
             json_body=payload,
@@ -31742,6 +33321,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     # ---------------- P15 智能文件导入 (故事线导入) ----------------
 
+    def _smart_import_workspace_context() -> WorkspaceContext:
+        workspace_context = _active_workspace_context_snapshot()
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Smart import object not found")
+        return workspace_context
+
+    def _smart_import_require_session(session_id: str, sandbox_id: str):
+        from app.services import smart_file_import as sfi
+        try:
+            return sfi.require_session_in_sandbox(state.db, session_id, sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
+
+    def _smart_import_require_file(file_id: str, sandbox_id: str):
+        from app.services import smart_file_import as sfi
+        try:
+            return sfi.require_file_in_sandbox(state.db, file_id, sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
+
+    def _smart_import_require_chunk(chunk_id: str, sandbox_id: str):
+        from app.services import smart_file_import as sfi
+        try:
+            return sfi.require_chunk_in_sandbox(state.db, chunk_id, sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
+
     @app.post("/api/v1/smart-import/sessions")
     def smart_import_create_session(payload: dict) -> dict:
         """新建一个智能文件导入会话.
@@ -31750,44 +33356,99 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         narratorUserId 从当前 session_user 取.
         """
         from app.services import smart_file_import as sfi
+        workspace_context = _smart_import_workspace_context()
+        client_id = str(payload.get("clientId") or "").strip() or None
+        if client_id:
+            require_client_in_workspace(client_id, workspace_context)
+        event_line_id = str(payload.get("projectEventLineId") or "").strip() or None
+        if event_line_id:
+            event_line_row = state.db.fetchone(
+                """
+                SELECT * FROM event_lines
+                WHERE (id = ? OR cloud_id = ?)
+                  AND COALESCE(sandbox_id, '') = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (event_line_id, event_line_id, workspace_context.sandbox_id),
+            )
+            if not event_line_row:
+                raise HTTPException(status_code=404, detail="Event line not found")
+            event_line_id = str(event_line_row["id"])
         session_user = get_cached_session_user()
         narrator = session_user.id if session_user else (payload.get("narratorUserId") or "")
-        sid = sfi.create_session(
-            state.db,
-            narrator_user_id=str(narrator),
-            client_id=(payload.get("clientId") or None),
-            project_event_line_id=(payload.get("projectEventLineId") or None),
-            title=str(payload.get("title") or "智能文件导入"),
-        )
-        return sfi.get_session(state.db, sid)
+        try:
+            sid = sfi.create_session(
+                state.db,
+                sandbox_id=workspace_context.sandbox_id,
+                narrator_user_id=str(narrator),
+                client_id=client_id,
+                project_event_line_id=event_line_id,
+                title=str(payload.get("title") or "智能文件导入"),
+            )
+            return sfi.get_session(
+                state.db,
+                sid,
+                sandbox_id=workspace_context.sandbox_id,
+            )
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
 
     @app.get("/api/v1/smart-import/sessions/{session_id}")
     def smart_import_get_session(session_id: str) -> dict:
         """读取会话完整状态(含 chunks + staged_files), 用于恢复 / 预览."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_session(session_id, sandbox_id)
         try:
-            return sfi.get_session(state.db, session_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return sfi.get_session(state.db, session_id, sandbox_id=sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
 
     @app.patch("/api/v1/smart-import/sessions/{session_id}")
     def smart_import_update_session(session_id: str, payload: dict) -> dict:
         from app.services import smart_file_import as sfi
+        workspace_context = _smart_import_workspace_context()
+        sandbox_id = workspace_context.sandbox_id
+        _smart_import_require_session(session_id, sandbox_id)
+        client_id = payload.get("clientId")
+        if client_id:
+            client_id = str(client_id).strip()
+            require_client_in_workspace(client_id, workspace_context)
+        event_line_id = payload.get("projectEventLineId")
+        if event_line_id:
+            event_line_id = str(event_line_id).strip()
+            event_line_row = state.db.fetchone(
+                """
+                SELECT * FROM event_lines
+                WHERE (id = ? OR cloud_id = ?)
+                  AND COALESCE(sandbox_id, '') = ?
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (event_line_id, event_line_id, sandbox_id),
+            )
+            if not event_line_row:
+                raise HTTPException(status_code=404, detail="Event line not found")
+            event_line_id = str(event_line_row["id"])
         try:
             sfi.update_session(
                 state.db, session_id,
-                client_id=payload.get("clientId"),
-                project_event_line_id=payload.get("projectEventLineId"),
+                sandbox_id=sandbox_id,
+                client_id=client_id,
+                project_event_line_id=event_line_id,
                 title=payload.get("title"),
             )
-            return sfi.get_session(state.db, session_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return sfi.get_session(state.db, session_id, sandbox_id=sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
 
     @app.delete("/api/v1/smart-import/sessions/{session_id}")
     def smart_import_discard_session(session_id: str) -> dict:
         from app.services import smart_file_import as sfi
-        sfi.discard_session(state.db, session_id)
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_session(session_id, sandbox_id)
+        sfi.discard_session(state.db, session_id, sandbox_id=sandbox_id)
         return {"ok": True}
 
     @app.post("/api/v1/smart-import/sessions/{session_id}/files")
@@ -31797,36 +33458,59 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     ) -> dict:
         """上传文件到 staging pool."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        # Scope check must happen before reading the request body into memory or
+        # creating a staging directory/file.
+        _smart_import_require_session(session_id, sandbox_id)
         try:
             content = file.file.read()
             return sfi.upload_staged_file(
                 state.db,
+                sandbox_id=sandbox_id,
                 session_id=session_id,
                 filename=file.filename or "uploaded",
                 content=content,
                 mime_type=file.content_type or "",
                 data_dir=state.data_dir,
             )
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.delete("/api/v1/smart-import/files/{file_id}")
     def smart_import_delete_file(file_id: str) -> dict:
         from app.services import smart_file_import as sfi
-        sfi.delete_staged_file(state.db, file_id)
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_file(file_id, sandbox_id)
+        sfi.delete_staged_file(
+            state.db,
+            file_id,
+            sandbox_id=sandbox_id,
+            data_dir=state.data_dir,
+        )
         return {"ok": True}
 
     @app.patch("/api/v1/smart-import/files/{file_id}/assign")
     def smart_import_assign_file(file_id: str, payload: dict) -> dict:
         """挂载/取消挂载 file ↔ chunk."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_file(file_id, sandbox_id)
+        chunk_id = payload.get("chunkId") or None
+        if chunk_id:
+            chunk_id = str(chunk_id)
+            _smart_import_require_chunk(chunk_id, sandbox_id)
         try:
             sfi.assign_file_to_chunk(
                 state.db,
+                sandbox_id=sandbox_id,
                 file_id=file_id,
-                chunk_id=payload.get("chunkId") or None,
+                chunk_id=chunk_id,
             )
             return {"ok": True}
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -31837,49 +33521,70 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload: { rawText: str, fileIds?: list[str], autoParse?: bool }
         """
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_session(session_id, sandbox_id)
+        file_ids = [str(item) for item in list(payload.get("fileIds") or [])]
+        for file_id in file_ids:
+            _smart_import_require_file(file_id, sandbox_id)
         try:
             chunk_id = sfi.add_chunk(
                 state.db, state.ai,
+                sandbox_id=sandbox_id,
                 session_id=session_id,
                 raw_text=str(payload.get("rawText") or ""),
-                file_ids=list(payload.get("fileIds") or []),
+                file_ids=file_ids,
                 auto_parse=bool(payload.get("autoParse", True)),
             )
-            return sfi.get_session(state.db, session_id)
+            return sfi.get_session(state.db, session_id, sandbox_id=sandbox_id)
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.patch("/api/v1/smart-import/chunks/{chunk_id}")
     def smart_import_update_chunk(chunk_id: str, payload: dict) -> dict:
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        chunk_row = _smart_import_require_chunk(chunk_id, sandbox_id)
         sfi.update_chunk_text(
             state.db, state.ai, chunk_id,
+            sandbox_id=sandbox_id,
             raw_text=str(payload.get("rawText") or ""),
             auto_parse=bool(payload.get("autoParse", True)),
         )
-        # 返回 session 全量
-        chunk_row = state.db.fetchone(
-            "SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,),
+        return sfi.get_session(
+            state.db,
+            chunk_row["session_id"],
+            sandbox_id=sandbox_id,
         )
-        if not chunk_row:
-            raise HTTPException(status_code=404, detail="chunk not found")
-        return sfi.get_session(state.db, chunk_row["session_id"])
 
     @app.delete("/api/v1/smart-import/chunks/{chunk_id}")
     def smart_import_delete_chunk(chunk_id: str) -> dict:
         from app.services import smart_file_import as sfi
-        sfi.delete_chunk(state.db, chunk_id)
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_chunk(chunk_id, sandbox_id)
+        sfi.delete_chunk(state.db, chunk_id, sandbox_id=sandbox_id)
         return {"ok": True}
 
     @app.post("/api/v1/smart-import/chunks/{chunk_id}/parse")
     def smart_import_parse_chunk(chunk_id: str) -> dict:
         """显式触发 chunk 的 LLM 解析 (用户点'重新解析')."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        # Guard before touching parse_status or invoking the AI provider.
+        _smart_import_require_chunk(chunk_id, sandbox_id)
         try:
-            parsed = sfi.parse_chunk(state.db, state.ai, chunk_id)
+            parsed = sfi.parse_chunk(
+                state.db,
+                state.ai,
+                chunk_id,
+                sandbox_id=sandbox_id,
+            )
             return {"ok": True, "parsed": parsed}
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"LLM 解析失败: {exc}") from exc
 
@@ -31887,14 +33592,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def smart_import_patch_chunk_parsed(chunk_id: str, payload: dict) -> dict:
         """用户 inline 编辑某字段后, 写回 chunk.parsed_json (不重调 LLM)."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        chunk_row = _smart_import_require_chunk(chunk_id, sandbox_id)
         try:
-            sfi.patch_chunk_parsed(state.db, chunk_id, payload.get("parsed") or {})
-            chunk_row = state.db.fetchone(
-                "SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,),
+            sfi.patch_chunk_parsed(
+                state.db,
+                chunk_id,
+                payload.get("parsed") or {},
+                sandbox_id=sandbox_id,
             )
-            if not chunk_row:
-                raise HTTPException(status_code=404, detail="chunk not found")
-            return sfi.get_session(state.db, chunk_row["session_id"])
+            return sfi.get_session(
+                state.db,
+                chunk_row["session_id"],
+                sandbox_id=sandbox_id,
+            )
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -31902,10 +33615,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def smart_import_preview(session_id: str) -> dict:
         """聚合所有 chunks 的解析结果, 给前端预览全部模态用."""
         from app.services import smart_file_import as sfi
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        _smart_import_require_session(session_id, sandbox_id)
         try:
-            return sfi.aggregate_session_to_plan(state.db, session_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            return sfi.aggregate_session_to_plan(
+                state.db,
+                session_id,
+                sandbox_id=sandbox_id,
+            )
+        except sfi.SmartImportScopeNotFound as exc:
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
 
     @app.post("/api/v1/smart-import/sessions/{session_id}/commit")
     def smart_import_commit_session(
@@ -31927,14 +33646,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             log_agent_run_start, log_agent_run_complete,
             check_idempotency, record_idempotency,
         )
-        if idempotency_key:
-            cached = check_idempotency(state.db, idempotency_key)
+        sandbox_id = _smart_import_workspace_context().sandbox_id
+        # Authorization precedes idempotency cache lookup, audit writes, parsing,
+        # file copies, and every downstream AI/knowledge call.
+        session_row = _smart_import_require_session(session_id, sandbox_id)
+        # The governance table is global.  Namespace caller-provided keys by the
+        # authorized object scope so the same header in another sandbox/session
+        # cannot replay or disclose this commit's cached outcome.
+        scoped_idempotency_key = (
+            f"smart_import.commit:{sandbox_id}:{session_id}:{idempotency_key}"
+            if idempotency_key
+            else None
+        )
+        if scoped_idempotency_key:
+            cached = check_idempotency(state.db, scoped_idempotency_key)
             if cached and cached.get("outcome"):
                 return cached["outcome"]
         # session 关联 client_id
-        session_row = state.db.fetchone(
-            "SELECT client_id FROM import_story_sessions WHERE id = ?", (session_id,),
-        )
         client_id_for_audit = str(session_row["client_id"]) if session_row and session_row["client_id"] else None
         run_id = log_agent_run_start(
             state.db,
@@ -31943,11 +33671,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             tool_name="smart_import.commit",
             input_payload={"session_id": session_id},
             client_id=client_id_for_audit,
-            idempotency_key=idempotency_key,
+            idempotency_key=scoped_idempotency_key,
         )
         try:
             stats = sfi.commit_session(
                 state.db, state.ai,
+                sandbox_id=sandbox_id,
                 session_id=session_id,
                 data_dir=state.data_dir,
                 ingest_document_fn=ingest_document_knowledge,
@@ -32029,9 +33758,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 output_payload={"facts_added": stats.get("facts_added", 0),
                                 "documents_added": stats.get("documents_added", 0)},
             )
-            if idempotency_key:
-                record_idempotency(state.db, idempotency_key, run_id=run_id, outcome=outcome)
+            if scoped_idempotency_key:
+                record_idempotency(
+                    state.db,
+                    scoped_idempotency_key,
+                    run_id=run_id,
+                    outcome=outcome,
+                )
             return outcome
+        except sfi.SmartImportScopeNotFound as exc:
+            log_agent_run_complete(state.db, run_id, status="failed", error_message="not found")
+            raise HTTPException(status_code=404, detail="Smart import object not found") from exc
         except ValueError as exc:
             log_agent_run_complete(state.db, run_id, status="failed", error_message=str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -32422,12 +34159,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             generate_narrative_dimensions,
         )
 
+        workspace_context = _active_workspace_context_snapshot()
+        require_client_in_workspace(client_id, workspace_context)
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+
         # 机制化 per-user chunks 过滤: 当前 viewer 只看自己上传文档抽出的 chunks,
         # 数据中心层 (字典/承诺/事件线/事实) 仍全员共享
-        session_user = get_cached_session_user()
+        session_user = _workspace_session_user(workspace_context)
         viewer_user_id = session_user.id if session_user else ""
         try:
-            bundle = collect_client_fact_bundle(state.db, client_id, viewer_user_id=viewer_user_id)
+            bundle = collect_client_fact_bundle(
+                state.db,
+                client_id,
+                viewer_user_id=viewer_user_id,
+                sandbox_id=workspace_context.sandbox_id,
+                organization_id=workspace_context.organization_id,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -32471,10 +34218,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             only_dimensions_set = {str(d) for d in requested_dimensions if str(d).strip()}
             if only_dimensions_set:
                 try:
-                    existing = cloud_request(
-                        "GET",
-                        f"/api/v1/clients/{client_id}/narrative",
-                        timeout=10.0,
+                    existing = (
+                        scoped_cloud_request(
+                            cloud_context,
+                            "GET",
+                            f"/api/v1/clients/{client_id}/narrative",
+                            timeout=10.0,
+                        )
+                        if cloud_context is not None
+                        else None
                     )
                 except Exception:
                     existing = None
@@ -32511,7 +34263,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # 任何客户每次重生 narrative, 待办自动结构化 (UI/chat/日历都能拿到), 不依赖手动
         try:
             from app.services.narrative_generator import upsert_commitments_from_narrative
-            todo_stats = upsert_commitments_from_narrative(state.db, client_id, dims)
+            todo_stats = upsert_commitments_from_narrative(
+                state.db,
+                client_id,
+                dims,
+                sandbox_id=workspace_context.sandbox_id,
+                organization_id=workspace_context.organization_id,
+            )
             logger.info(
                 "[narrative→commitments] client=%s inserted=%d skipped=%d",
                 client_id, todo_stats.get("inserted", 0), todo_stats.get("skipped", 0),
@@ -32562,8 +34320,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "contributors": [],
             "updatedAt": _gen_at,
         }
+        if cloud_context is None:
+            local_record["_cloudIngestError"] = "当前工作空间没有可用的组织云会话"
+            try:
+                _save_narrative_mirror(
+                    client_id,
+                    local_record,
+                    "local-only",
+                    workspace_context,
+                )
+            except Exception:
+                pass
+            return local_record
         try:
-            cloud_record = cloud_request(
+            cloud_record = scoped_cloud_request(
+                cloud_context,
                 "POST",
                 f"/api/v1/clients/{client_id}/narrative/ingest",
                 json_body=ingest_payload,
@@ -32573,7 +34344,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             # 云端没回完整 dims 时退用本地生成结果。两种都落本地镜像。
             record = cloud_record if (isinstance(cloud_record, dict) and cloud_record.get("dimensions")) else local_record
             try:
-                _save_narrative_mirror(client_id, record, "cloud")
+                _save_narrative_mirror(
+                    client_id,
+                    record,
+                    "cloud",
+                    workspace_context,
+                )
             except Exception:
                 pass
             return record
@@ -32582,7 +34358,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if exc.status_code in (404, 405, 502):
                 local_record["_cloudIngestError"] = f"{exc.status_code}: {exc.detail}"
                 try:
-                    _save_narrative_mirror(client_id, local_record, "local-only")
+                    _save_narrative_mirror(
+                        client_id,
+                        local_record,
+                        "local-only",
+                        workspace_context,
+                    )
                 except Exception:
                     pass
                 return local_record
@@ -33340,9 +35121,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "fingerprint": local_fingerprint or None,
             })
 
-    _cloud_object_storage_sync_status: dict[str, object] = {"state": "never"}
+    @dataclass(frozen=True)
+    class ObjectStorageRequestScope:
+        sandbox_id: str
+        organization_id: str
+        organization_scoped: bool
+        session_is_admin: bool
+        session_user_present: bool
+        configured_by: str
+        cloud_context: ScopedCloudContext | None
 
-    def _sync_object_storage_config_from_cloud() -> dict[str, object]:
+    def _capture_object_storage_request_scope() -> ObjectStorageRequestScope:
+        """Freeze the storage destination and cloud session before any I/O."""
+        workspace_ctx = _freeze_volatile_cloud_session(load_active_workspace_context(state.db))
+        sandbox_id = str(workspace_ctx.sandbox_id or "").strip()
+        if not sandbox_id or workspace_ctx.kind == "missing":
+            raise HTTPException(status_code=409, detail="当前工作空间不可用，已停止对象存储同步。")
+        session_user = workspace_ctx.session_user if isinstance(workspace_ctx.session_user, dict) else {}
+        cloud_context: ScopedCloudContext | None = None
+        if workspace_ctx.kind == "organization":
+            try:
+                cloud_context = _scoped_cloud_context_from_workspace(workspace_ctx)
+            except AsyncJobScopeError as exc:
+                raise HTTPException(status_code=409, detail="组织会话与工作空间不匹配，已停止对象存储同步。") from exc
+        organization_id = str(
+            workspace_ctx.organization_id or workspace_ctx.session_organization_id or ""
+        ).strip()
+        return ObjectStorageRequestScope(
+            sandbox_id=sandbox_id,
+            organization_id=organization_id,
+            organization_scoped=workspace_ctx.kind == "organization",
+            session_is_admin=str(session_user.get("primaryRole") or "") == "admin",
+            session_user_present=bool(session_user),
+            configured_by=str(session_user.get("id") or ""),
+            cloud_context=cloud_context,
+        )
+
+    def _validate_object_storage_cloud_org(
+        cloud_payload: dict[str, object],
+        scope: ObjectStorageRequestScope,
+    ) -> None:
+        response_org_id = str(cloud_payload.get("orgId") or "").strip()
+        if not scope.organization_id or response_org_id != scope.organization_id:
+            raise RuntimeError("云端对象存储配置的组织身份与请求工作空间不匹配")
+
+    def _sync_object_storage_config_from_cloud(
+        scope: ObjectStorageRequestScope,
+    ) -> dict[str, object]:
         """Pull org-level object storage config from cloud and cache it locally.
 
         The local cache is used by backend upload/transcode flows. UI responses may
@@ -33351,14 +35176,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from app.services.object_storage.settings_store import save_object_storage_settings
 
         try:
-            is_admin = current_session_is_admin()
-            endpoint = "/api/v1/settings/org-object-storage-config/secret" if is_admin else "/api/v1/settings/org-object-storage-config"
-            cloud_payload = cloud_request("GET", endpoint)
+            if scope.cloud_context is None:
+                return {
+                    "state": "skipped",
+                    "at": now_iso(),
+                    "reason": "当前工作空间没有云端会话",
+                }
+            endpoint = (
+                "/api/v1/settings/org-object-storage-config/secret"
+                if scope.session_is_admin
+                else "/api/v1/settings/org-object-storage-config"
+            )
+            cloud_payload = scoped_cloud_request(scope.cloud_context, "GET", endpoint)
             if not isinstance(cloud_payload, dict):
                 raise RuntimeError("云端响应非 JSON 对象")
+            _validate_object_storage_cloud_org(cloud_payload, scope)
             provider = str(cloud_payload.get("provider") or "").strip()
             enabled = bool(cloud_payload.get("enabled"))
-            credentials_raw = cloud_payload.get("credentials") if is_admin else {}
+            credentials_raw = cloud_payload.get("credentials") if scope.session_is_admin else {}
             extra_raw = cloud_payload.get("extraConfig")
             credentials = {
                 str(key): str(value)
@@ -33370,26 +35205,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 for key, value in (extra_raw.items() if isinstance(extra_raw, dict) else [])
                 if str(value).strip()
             }
-            if not provider:
-                save_object_storage_settings(
-                    state.db,
-                    ObjectStorageSettingsPayload(provider="", credentials={}, extraConfig={}, enabled=False),
-                    now_iso=str(cloud_payload.get("updatedAt") or now_iso()),
-                    sandbox_id=get_active_sandbox_id(state.db),
-                    managed_by_cloud=True,
-                    configured_by=str(cloud_payload.get("configuredBy") or ""),
-                )
-                _cloud_object_storage_sync_status.clear()
-                _cloud_object_storage_sync_status.update({
-                    "state": "skipped",
-                    "at": now_iso(),
-                    "reason": "云端组织对象存储配置为空",
-                    "provider": None,
-                    "enabled": False,
-                    "hasCredentials": False,
-                })
-                return dict(_cloud_object_storage_sync_status)
-            save_object_storage_settings(
+            saved_record = save_object_storage_settings(
                 state.db,
                 ObjectStorageSettingsPayload(
                     provider=provider,
@@ -33398,32 +35214,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     enabled=enabled,
                 ),
                 now_iso=str(cloud_payload.get("updatedAt") or now_iso()),
-                sandbox_id=get_active_sandbox_id(state.db),
+                sandbox_id=scope.sandbox_id,
                 managed_by_cloud=True,
-                configured_by=str(cloud_payload.get("configuredBy") or ""),
+                configured_by=str(cloud_payload.get("configuredBy") or scope.configured_by or ""),
+                preserve_credentials_if_empty=(
+                    not scope.session_is_admin and bool(cloud_payload.get("hasCredentials"))
+                ),
             )
-            _cloud_object_storage_sync_status.clear()
-            _cloud_object_storage_sync_status.update({
-                "state": "synced",
+            return {
+                "state": "synced" if provider else "skipped",
                 "at": now_iso(),
-                "provider": provider,
+                "reason": None if provider else "云端组织对象存储配置为空",
+                "provider": provider or None,
                 "enabled": enabled,
-                "hasCredentials": bool(credentials),
-                "scope": "secret" if is_admin else "public",
-            })
+                "hasCredentials": saved_record.hasCredentials,
+                "scope": "secret" if scope.session_is_admin else "public",
+                "sandboxId": scope.sandbox_id,
+                "organizationId": scope.organization_id,
+            }
         except Exception as exc:
-            _cloud_object_storage_sync_status.clear()
-            _cloud_object_storage_sync_status.update({
+            status = {
                 "state": "failed",
                 "at": now_iso(),
                 "reason": str(exc)[:200] or exc.__class__.__name__,
-            })
+                "sandboxId": scope.sandbox_id,
+                "organizationId": scope.organization_id,
+            }
             logger.warning("[cloud-object-storage-sync] pull failed: %s", exc)
-        return dict(_cloud_object_storage_sync_status)
+            return status
 
-    def _push_object_storage_config_to_cloud(payload: ObjectStorageSettingsPayload) -> dict[str, object]:
+    def _push_object_storage_config_to_cloud(
+        payload: ObjectStorageSettingsPayload,
+        scope: ObjectStorageRequestScope,
+    ) -> dict[str, object]:
         try:
-            response = cloud_request(
+            if scope.cloud_context is None:
+                raise RuntimeError("当前工作空间没有云端会话")
+            response = scoped_cloud_request(
+                scope.cloud_context,
                 "POST",
                 "/api/v1/settings/org-object-storage-config",
                 json_body={
@@ -33436,18 +35264,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
             if not isinstance(response, dict):
                 raise RuntimeError("云端响应非 JSON 对象")
-            return _sync_object_storage_config_from_cloud()
+            _validate_object_storage_cloud_org(response, scope)
+            return _sync_object_storage_config_from_cloud(scope)
         except Exception as exc:
-            _cloud_object_storage_sync_status.clear()
-            _cloud_object_storage_sync_status.update({
+            status = {
                 "state": "failed",
                 "at": now_iso(),
                 "reason": str(exc)[:200] or exc.__class__.__name__,
                 "provider": payload.provider,
                 "enabled": payload.enabled,
-            })
+                "sandboxId": scope.sandbox_id,
+                "organizationId": scope.organization_id,
+            }
             logger.warning("[cloud-object-storage-sync] push failed: %s", exc)
-            return dict(_cloud_object_storage_sync_status)
+            return status
 
     @app.get("/api/v1/auth/me", response_model=AuthStateResponse)
     def auth_me() -> AuthStateResponse:
@@ -33515,7 +35345,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             daemon=True,
             name="org-ai-runtime-auth-me",
         ).start()
-        threading.Thread(target=_sync_object_storage_config_from_cloud, daemon=True).start()
+        object_storage_scope = _capture_object_storage_request_scope()
+        if object_storage_scope.cloud_context is not None:
+            threading.Thread(
+                target=lambda: _sync_object_storage_config_from_cloud(object_storage_scope),
+                daemon=True,
+                name="cloud-object-storage-sync-auth-me",
+            ).start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.get("/api/v1/account/overview", response_model=AccountOverviewResponse)
@@ -34408,11 +36244,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return ""
         return str(payload.get("cloudInstanceId") or "").strip()
 
-    def _activate_workspace_for_cloud_user(user: SessionUserRecord, *, cloud_api_url: str | None = None) -> None:
+    def _activate_workspace_for_cloud_user(
+        user: SessionUserRecord,
+        *,
+        cloud_api_url: str | None = None,
+    ) -> SandboxWorkspaceRecord | None:
         current_cloud_api_url = (cloud_api_url or state.cloud_api_url).strip()
         organization_id = (user.organizationId or "").strip()
         if not organization_id or organization_id == "local-device":
-            return
+            return None
         cloud_instance_id = _fetch_cloud_instance_id(current_cloud_api_url)
         workspace = ensure_organization_sandbox_for_session(
             state.db,
@@ -34423,12 +36263,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         migrate_local_draft_to_organization_if_possible(state.db, workspace.id)
         _refresh_active_workspace_runtime()
+        return workspace
 
-    def _sync_organization_directory_after_auth() -> dict[str, object]:
+    def _sync_organization_directory_after_auth(
+        context: ScopedCloudContext | None = None,
+    ) -> dict[str, object]:
         """Best-effort local mirror refresh after entering an organization workspace."""
-        base_url = cloud_api_base_url()
-        token = get_cloud_token()
-        if not base_url or not token:
+        sync_context = context or _capture_active_scoped_cloud_context()
+        if sync_context is None or not sync_context.access_token:
             return {"status": "skipped", "error": "当前未连接组织云"}
         last_error = ""
         for attempt in range(2):
@@ -34436,9 +36278,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 from app.modules.organization import sync_organization_directory
                 report = sync_organization_directory(
                     state.db,
-                    cloud_base_url=base_url,
-                    cloud_token=token,
+                    cloud_base_url=sync_context.cloud_api_url,
+                    cloud_token=sync_context.access_token,
                     derive_cru_from_local=True,
+                    client_sandbox_id=sync_context.sandbox_id,
+                    expected_organization_id=sync_context.organization_id,
                 )
                 if report.status != "ok":
                     last_error = str(report.error or "组织成员目录同步失败")
@@ -34452,13 +36296,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 time.sleep(0.35)
         return {"status": "failed", "error": last_error}
 
-    def _sync_task_lists_after_auth() -> dict[str, object]:
+    def _sync_task_lists_after_auth(
+        context: ScopedCloudContext | None = None,
+    ) -> dict[str, object]:
         """Mirror the current organization's cloud task lists into the active sandbox."""
-        if not get_cloud_token():
+        sync_context = context or _capture_active_scoped_cloud_context()
+        if sync_context is None:
             return {"status": "skipped", "error": "当前未连接组织云"}
-        target_sandbox_id = active_business_sandbox_id()
+        target_sandbox_id = sync_context.sandbox_id
         try:
-            payload = cloud_request("GET", "/api/v1/task-lists", bypass_circuit_breaker=True)
+            payload = scoped_cloud_request(
+                sync_context,
+                "GET",
+                "/api/v1/task-lists",
+            )
             if not isinstance(payload, dict):
                 return {"status": "failed", "error": "云端任务清单返回异常"}
             items = [item for item in payload.get("lists", []) if isinstance(item, dict)]
@@ -34472,15 +36323,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     target_sandbox_id=target_sandbox_id,
                 )
                 mirrored = 1
-            _enforce_local_task_list_default_for_scope("org")
+            _enforce_local_task_list_default_for_scope(
+                "org",
+                sandbox_id=target_sandbox_id,
+            )
             return {"status": "ok", "mirrored": mirrored, "error": ""}
         except Exception as exc:
             logger.warning("task list mirror sync after auth failed: %s", exc)
             return {"status": "failed", "error": str(exc)}
 
-    def _sync_organization_bootstrap_after_auth() -> dict[str, object]:
-        directory_report = _sync_organization_directory_after_auth()
-        task_list_report = _sync_task_lists_after_auth()
+    def _sync_organization_bootstrap_after_auth(
+        context: ScopedCloudContext | None = None,
+    ) -> dict[str, object]:
+        directory_report = _sync_organization_directory_after_auth(context)
+        task_list_report = _sync_task_lists_after_auth(context)
         return {
             "status": "ok" if directory_report.get("status") == "ok" and task_list_report.get("status") == "ok" else "partial",
             "directory": directory_report,
@@ -34511,19 +36367,63 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             message = response.get("message") if isinstance(response, dict) else "云端认证成功，但未拿到有效会话。"
             raise HTTPException(status_code=502, detail=str(message))
         user = SessionUserRecord(**user_payload)
-        _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
-        set_cloud_session(token, user, persist=persist)
-        set_cloud_refresh_token(refresh_token, persist=persist)
+        resolved_cloud_api_url = str(cloud_api_url or state.cloud_api_url).rstrip("/")
+        membership_payload = _preflight_cloud_membership_before_workspace_mutation(
+            cloud_api_url=resolved_cloud_api_url,
+            access_token=token,
+            expected_organization_id=user.organizationId,
+        )
+        workspace = _activate_workspace_for_cloud_user(user, cloud_api_url=cloud_api_url)
+        if workspace is None or str(workspace.organizationId or "") != user.organizationId:
+            raise HTTPException(status_code=409, detail="云端会话无法绑定到目标组织工作空间")
+        auth_context = ScopedCloudContext(
+            sandbox_id=workspace.id,
+            organization_id=user.organizationId,
+            cloud_api_url=str(workspace.cloudApiUrl or cloud_api_url or "").rstrip("/"),
+            access_token=token,
+            refresh_token=refresh_token,
+            cloud_instance_id=str(workspace.cloudInstanceId or ""),
+            persistent=persist,
+        )
+        auth_workspace_context = _freeze_volatile_cloud_session(
+            load_workspace_context(state.db, auth_context.sandbox_id)
+        )
+        # Validate the token's membership response before persisting credentials
+        # or starting any downstream bootstrap. Network failures remain
+        # best-effort, but an explicit organization mismatch fails closed.
+        _ensure_local_organization_workspace_from_cloud_membership(
+            context=auth_context,
+            workspace_context=auth_workspace_context,
+            membership_payload=membership_payload,
+            fetch_membership=False,
+        )
+        _write_scoped_cloud_session(
+            auth_context,
+            access_token=token,
+            refresh_token=refresh_token,
+            user=user,
+        )
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
-        _ensure_local_organization_workspace_from_cloud_membership()
-        _sync_organization_bootstrap_after_auth()
-        sync_context = _capture_active_scoped_cloud_context()
+        _sync_organization_bootstrap_after_auth(auth_context)
         Thread(
-            target=lambda: _sync_org_ai_config_from_cloud(user, context=sync_context),
+            target=lambda: _sync_org_ai_config_from_cloud(user, context=auth_context),
             daemon=True,
             name="cloud-ai-sync-auth",
         ).start()
-        Thread(target=_sync_object_storage_config_from_cloud, daemon=True, name="cloud-object-storage-sync-auth").start()
+        object_storage_scope = ObjectStorageRequestScope(
+            sandbox_id=auth_context.sandbox_id,
+            organization_id=auth_context.organization_id,
+            organization_scoped=True,
+            session_is_admin=user.primaryRole == "admin",
+            session_user_present=True,
+            configured_by=user.id,
+            cloud_context=auth_context,
+        )
+        Thread(
+            target=lambda: _sync_object_storage_config_from_cloud(object_storage_scope),
+            daemon=True,
+            name="cloud-object-storage-sync-auth",
+        ).start()
         return AuthStateResponse(authenticated=True, user=user, sessionMode="cloud")
 
     @app.post("/api/v1/auth/register", response_model=AuthStateResponse)
@@ -35142,47 +37042,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         return [build_event_line(row) for row in rows]
 
-    @app.post("/api/v1/event-lines", response_model=EventLineRecord)
-    def create_event_line(
+    def _create_event_line_in_workspace(
         payload: EventLineCreatePayload,
-        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-        actor_type: str = Header("human", alias="X-Actor-Type"),
-        actor_id: str = Header("", alias="X-Actor-Id"),
+        workspace_context: WorkspaceContext,
     ) -> EventLineRecord:
-        # v2.2 F2.8 (N3 A6): 幂等性检查 — 防 AI agent retry 重复创建
-        _METHOD, _PATH = "POST", "/api/v1/event-lines"
-        _idemp = None
-        if idempotency_key:
-            from app.services.idempotency_store import (
-                IdempotencyKeyMismatchError,
-                get_idempotency_store,
-            )
-            _idemp = get_idempotency_store(state.db)
-            try:
-                _cached = _idemp.find(
-                    idempotency_key, _METHOD, _PATH,
-                    payload=payload.model_dump(),
-                )
-            except IdempotencyKeyMismatchError as _e:
-                raise HTTPException(status_code=422, detail=str(_e))
-            if _cached and _cached.status == "completed":
-                return EventLineRecord.model_validate_json(_cached.response_body)
-            if _cached and _cached.status == "in_progress":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Request still in progress, retry after a brief wait",
-                )
-            _idemp.start(
-                idempotency_key, _METHOD, _PATH,
-                payload=payload.model_dump(),
-                actor_type=actor_type, actor_id=actor_id,
-            )
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Workspace not found")
         timestamp = now_iso()
         event_line_id = (payload.id or "").strip() or new_id("eline")
         client_id = str(payload.primaryClientId).strip() if payload.primaryClientId else None
-        client_row = require_client_in_active_sandbox(client_id) if client_id else None
-        has_cloud = bool(get_cloud_token())
-        sandbox_id = active_business_sandbox_id()
+        client_row = require_client_in_workspace(client_id, workspace_context) if client_id else None
+        try:
+            sync_context = _scoped_cloud_context_from_workspace(workspace_context)
+        except AsyncJobScopeError:
+            sync_context = None
+        has_cloud = bool(sync_context)
+        sandbox_id = workspace_context.sandbox_id
         state.db.execute(
             """
             INSERT INTO event_lines(
@@ -35208,7 +37083,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.nextStep,
                 _event_line_evidence_count_or_zero(payload.evidenceCount),
                 payload.ownerId,
-                current_operator_name(),
+                _workspace_actor_name(workspace_context),
                 client_id,
                 str(client_row["name"]) if client_row else None,
                 payload.primaryDepartmentId,
@@ -35228,7 +37103,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if has_cloud:
             cloud_payload = _event_line_cloud_payload_from_row(row, include_id=True)
             try:
-                response = cloud_request("POST", "/api/v1/event-lines", json_body=cloud_payload, timeout=6.0)
+                assert sync_context is not None
+                response = scoped_cloud_request(
+                    sync_context,
+                    "POST",
+                    "/api/v1/event-lines",
+                    json_body=cloud_payload,
+                    timeout=6.0,
+                )
                 if not isinstance(response, dict):
                     raise HTTPException(status_code=502, detail="Invalid event line payload")
                 _upsert_cloud_event_line_shadow_local(response, target_sandbox_id=sandbox_id, local_id=event_line_id)
@@ -35251,17 +37133,54 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if not row:
             raise HTTPException(status_code=500, detail="Event line creation failed")
-        # v2.2 F2.8: 缓存响应供 retry 复用
-        _result = build_event_line(row)
-        if _idemp:
-            _idemp.complete(
-                idempotency_key, _METHOD, _PATH,
-                status=200, response_body=_result.model_dump(mode="json"),
+        return build_event_line(row)
+
+    @app.post("/api/v1/event-lines", response_model=EventLineRecord)
+    def create_event_line(
+        payload: EventLineCreatePayload,
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+        actor_type: str = Header("human", alias="X-Actor-Type"),
+        actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> EventLineRecord:
+        workspace_context = _active_workspace_context_snapshot()
+        method, path = "POST", "/api/v1/event-lines"
+        key, store, scope, claim_token, cached = _begin_idempotent_create(
+            idempotency_key=idempotency_key,
+            method=method,
+            path=path,
+            payload=payload.model_dump(),
+            workspace_context=workspace_context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        if cached is not None:
+            return EventLineRecord.model_validate_json(cached.response_body)
+        try:
+            result = _create_event_line_in_workspace(payload, workspace_context)
+        except Exception:
+            _mark_idempotent_create_failed(
+                store=store,
+                idempotency_key=key,
+                method=method,
+                path=path,
+                scope=scope,
+                claim_token=claim_token,
             )
-        return _result
+            raise
+        _complete_idempotent_create(
+            store=store,
+            idempotency_key=key,
+            method=method,
+            path=path,
+            scope=scope,
+            claim_token=claim_token,
+            response_body=result.model_dump(mode="json"),
+        )
+        return result
 
     @app.get("/api/v1/event-lines/{event_line_id}", response_model=EventLineDetailRecord)
     def get_event_line(event_line_id: str) -> EventLineDetailRecord:
+        workspace_context = _active_workspace_context_snapshot()
         row = state.db.fetchone(
             "SELECT * FROM event_lines WHERE (id = ? OR cloud_id = ?) AND COALESCE(sandbox_id, '') = ?",
             (event_line_id, event_line_id, active_business_sandbox_id()),
@@ -35290,7 +37209,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if local_row:
                         return build_event_line_detail(local_row)
                 if record:
-                    return build_cloud_event_line_detail(response)
+                    return build_cloud_event_line_detail(
+                        response,
+                        workspace_context=workspace_context,
+                    )
             except HTTPException:
                 pass
         raise HTTPException(status_code=404, detail="Event line not found")
@@ -35340,7 +37262,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="Event line context bundle not found")
         return bundle
 
-    _context_preview_cache: dict[str, tuple[float, object]] = {}
+    _context_preview_cache: dict[tuple[str, str], tuple[float, object]] = {}
 
     # ── Task Understanding (预处理+缓存架构) ──────
 
@@ -35377,43 +37299,99 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         content = f"{task.title}|{task.desc or ''}|{task.status}|{task.clientId or ''}|{task.eventLineId or ''}"
         return hashlib.md5(content.encode()).hexdigest()[:12]
 
-    def _precompute_task_understanding(task_id: str) -> None:
+    def _precompute_task_understanding(
+        task_id: str,
+        workspace_context: WorkspaceContext | None = None,
+    ) -> None:
         """后台线程：生成理解并写入缓存。"""
         try:
-            task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
-            if not task:
-                return
-            if is_private_task(task):
-                return
-            content_hash = _task_content_hash(task)
-            cached = state.db.fetchone("SELECT task_hash FROM task_understanding_cache WHERE task_id = ?", (task_id,))
-            if cached and str(cached["task_hash"]) == content_hash:
-                return
-            result = _build_task_understanding_record(task)
-            ts = now_iso()
-            state.db.execute(
-                """INSERT INTO task_understanding_cache(task_id, snapshot_json, task_hash, created_at, updated_at)
-                   VALUES(?, ?, ?, ?, ?)
-                   ON CONFLICT(task_id) DO UPDATE SET snapshot_json=excluded.snapshot_json, task_hash=excluded.task_hash, updated_at=excluded.updated_at""",
-                (task_id, to_json(result.model_dump()), content_hash, ts, ts),
-            )
-            if state.system_logger:
-                state.system_logger.info("understanding", f"预处理完成: {task.title[:40]}", task_id=task_id, confidence=result.confidence)
+            frozen_context = workspace_context or _active_workspace_context_snapshot()
+            with persisted_async_workspace_scope(frozen_context):
+                task_scope = require_task_in_workspace(task_id, frozen_context)
+                local_task_id = str(task_scope["id"])
+                task = next(iter(fetch_tasks("t.id = ?", (local_task_id,))), None)
+                if not task or is_private_task(task):
+                    return
+                content_hash = _task_content_hash(task)
+                cached = state.db.fetchone(
+                    "SELECT task_hash FROM task_understanding_cache WHERE task_id = ?",
+                    (local_task_id,),
+                )
+                if cached and str(cached["task_hash"]) == content_hash:
+                    return
+                result = _build_task_understanding_record(task)
+                ts = now_iso()
+                snapshot_json = to_json(result.model_dump())
+
+                def _write_if_scope_and_content_are_current(conn) -> bool:
+                    # The model call above can be slow. Revalidate under one
+                    # IMMEDIATE transaction so a workspace move or task edit
+                    # cannot race between the final check and cache upsert.
+                    try:
+                        refreshed_scope = require_task_in_workspace(
+                            local_task_id,
+                            frozen_context,
+                        )
+                    except HTTPException:
+                        return False
+                    if str(refreshed_scope["id"] or "") != local_task_id:
+                        return False
+                    refreshed_task = next(
+                        iter(fetch_tasks("t.id = ?", (local_task_id,))),
+                        None,
+                    )
+                    if (
+                        refreshed_task is None
+                        or is_private_task(refreshed_task)
+                        or _task_content_hash(refreshed_task) != content_hash
+                    ):
+                        return False
+                    conn.execute(
+                        """INSERT INTO task_understanding_cache(task_id, snapshot_json, task_hash, created_at, updated_at)
+                           VALUES(?, ?, ?, ?, ?)
+                           ON CONFLICT(task_id) DO UPDATE SET snapshot_json=excluded.snapshot_json, task_hash=excluded.task_hash, updated_at=excluded.updated_at""",
+                        (local_task_id, snapshot_json, content_hash, ts, ts),
+                    )
+                    return True
+
+                written = state.db.run_in_transaction(
+                    _write_if_scope_and_content_are_current,
+                    mode="IMMEDIATE",
+                )
+                if not written:
+                    return
+                if state.system_logger:
+                    state.system_logger.info(
+                        "understanding",
+                        f"预处理完成: {task.title[:40]}",
+                        task_id=local_task_id,
+                        confidence=result.confidence,
+                    )
         except Exception as exc:
             if state.system_logger:
                 state.system_logger.error("understanding", f"预处理失败: {task_id}", error=str(exc))
 
     @app.get("/api/v1/tasks/{task_id}/understanding")
     def get_task_understanding(task_id: str) -> dict:
-        cached = state.db.fetchone("SELECT snapshot_json FROM task_understanding_cache WHERE task_id = ?", (task_id,))
+        workspace_context = _active_workspace_context_snapshot()
+        task_scope = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(task_scope["id"])
+        cached = state.db.fetchone(
+            "SELECT snapshot_json FROM task_understanding_cache WHERE task_id = ?",
+            (local_task_id,),
+        )
         if cached and cached["snapshot_json"]:
             return from_json(cached["snapshot_json"], {})
-        task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
+        task = next(iter(fetch_tasks("t.id = ?", (local_task_id,))), None)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
 
         # 无缓存 → 后台排队，同时返回 lightweight understanding
-        Thread(target=_precompute_task_understanding, args=(task_id,), daemon=True).start()
+        Thread(
+            target=_precompute_task_understanding,
+            args=(local_task_id, workspace_context),
+            daemon=True,
+        ).start()
         lightweight = _build_task_understanding_record(task).model_dump(mode="json")
         lightweight["_pending"] = True
         return lightweight
@@ -35425,12 +37403,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         page: Literal["task_detail", "task_ai"] = Query(default="task_detail"),
         includeRawEvidence: bool = Query(default=False),
     ) -> PageContextPackRecord:
+        workspace_context = _active_workspace_context_snapshot()
+        task_scope = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(task_scope["id"])
         intent = infer_page_intent(prompt, page)
         try:
             return build_task_page_context_pack(
                 state.db,
                 data_dir=state.data_dir,
-                task_id=task_id,
+                task_id=local_task_id,
                 prompt=prompt,
                 page=page,
                 intent=intent,
@@ -35442,17 +37423,26 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/tasks/{task_id}/context-preview", response_model=TaskContextPreviewRecord)
     def get_task_context_preview(task_id: str) -> TaskContextPreviewRecord:
         import time as _time
-        cached = _context_preview_cache.get(task_id)
+        workspace_context = _active_workspace_context_snapshot()
+        task_scope = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(task_scope["id"])
+        cache_key = (workspace_context.sandbox_id, local_task_id)
+        cached = _context_preview_cache.get(cache_key)
         if cached and _time.time() - cached[0] < 300:
             return cached[1]  # type: ignore[return-value]
-        if get_cloud_token():
-            task = fetch_cloud_task_by_id(task_id)
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context:
+            cloud_task_id = str(task_scope["cloud_id"] or local_task_id)
+            payload = scoped_cloud_request(cloud_context, "GET", f"/api/v1/tasks/{cloud_task_id}")
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Invalid cloud task payload")
+            task = build_cloud_task(payload, {})
         else:
-            task = next(iter(fetch_tasks("t.id = ?", (task_id,))), None)
+            task = next(iter(fetch_tasks("t.id = ?", (local_task_id,))), None)
             if task is None:
                 raise HTTPException(status_code=404, detail="Task not found")
         result = _build_task_context_preview(task)
-        _context_preview_cache[task_id] = (_time.time(), result)
+        _context_preview_cache[cache_key] = (_time.time(), result)
         return result
 
     def _build_smart_brief_for_task(task: TaskRecord) -> TaskSmartBriefRecord:
@@ -35903,8 +37893,33 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     def _gather_task_context_bundle(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None) -> dict:
         """Assemble all available context for a task into a single bundle."""
+        workspace_context = _active_workspace_context_snapshot()
+        scoped_task = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(scoped_task["id"] or "").strip()
+        cloud_task_id = str(scoped_task["cloud_id"] or "").strip()
+        task_sandbox_id = str(scoped_task["sandbox_id"] or "").strip()
         bundle: dict[str, object] = {"taskId": task_id, "title": title, "desc": desc}
         source_labels: list[str] = []
+
+        # clientId/eventLineId in the batch payload are display hints only.
+        # Resolve both parents from the already-scoped task row so a caller
+        # cannot splice another sandbox's notebook, event memory, or files into
+        # this task's AI prompt.
+        client_row = None
+        authoritative_client_id = str(scoped_task["client_id"] or "").strip()
+        if authoritative_client_id:
+            client_row = require_client_in_workspace(authoritative_client_id, workspace_context)
+            client_id = str(client_row["id"] or "").strip()
+        else:
+            client_id = None
+
+        event_line_row = None
+        authoritative_event_line_id = str(scoped_task["event_line_id"] or "").strip()
+        if authoritative_event_line_id:
+            event_line_row = _event_line_in_workspace(authoritative_event_line_id, workspace_context)
+            event_line_id = str(event_line_row["id"] or "").strip()
+        else:
+            event_line_id = None
 
         if desc.strip():
             source_labels.append("任务说明")
@@ -35924,13 +37939,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 if collab:
                     bundle["collaborationRelationship"] = collab[:300]
                     source_labels.append("合作关系")
-            client_row = state.db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
             if client_row:
                 bundle["clientName"] = str(client_row["name"])
 
         # 事件线上下文
         if event_line_id:
-            el_row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
+            el_row = event_line_row
             if el_row:
                 for field in ("name", "summary", "intent", "current_blocker", "recent_decision", "next_step", "stage"):
                     val = str(el_row[field] or "").strip()
@@ -35956,16 +37970,32 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 source_labels.append("事件线记忆")
 
         # 附件 + 附件内容提取（本任务 + 同事件线其他任务的附件）
-        attachment_rows = state.db.fetchall(
-            "SELECT id, title, path, kind, document_id FROM task_attachments WHERE task_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE task_id = ?",
-            (task_id, task_id),
-        )
+        attachment_rows: list[Any] = []
+        task_refs = (local_task_id, cloud_task_id or local_task_id)
+        for table_name in ("task_attachments", "task_attachments_cloud"):
+            candidates = state.db.fetchall(
+                f"SELECT * FROM {table_name} WHERE task_id IN (?, ?) ORDER BY created_at DESC",
+                task_refs,
+            )
+            attachment_rows.extend(
+                row
+                for row in candidates
+                if _attachment_row_matches_workspace(table_name, row, workspace_context)
+            )
         if not attachment_rows and event_line_id:
             # 如果本任务没有附件，检查同事件线下其他任务的附件
-            attachment_rows = state.db.fetchall(
-                "SELECT id, title, path, kind, document_id FROM task_attachments WHERE event_line_id = ? UNION ALL SELECT id, title, path, kind, document_id FROM task_attachments_cloud WHERE event_line_id = ?",
-                (event_line_id, event_line_id),
-            )
+            cloud_event_line_id = str(event_line_row["cloud_id"] or "").strip() if event_line_row else ""
+            event_line_refs = (event_line_id, cloud_event_line_id or event_line_id)
+            for table_name in ("task_attachments", "task_attachments_cloud"):
+                candidates = state.db.fetchall(
+                    f"SELECT * FROM {table_name} WHERE event_line_id IN (?, ?) ORDER BY created_at DESC",
+                    event_line_refs,
+                )
+                attachment_rows.extend(
+                    row
+                    for row in candidates
+                    if _attachment_row_matches_workspace(table_name, row, workspace_context)
+                )
         if attachment_rows:
             bundle["attachments"] = [str(row["title"]) for row in attachment_rows[:5]]
             source_labels.append("附件")
@@ -35982,7 +38012,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # 1. Try local attachment cache first (fastest — milliseconds)
                 cached_text = ""
                 if att_id:
-                    cached_bytes = _att_cache_read(att_id, ".text.json")
+                    cached_bytes = _att_cache_read(
+                        sandbox_id=task_sandbox_id,
+                        attachment_id=att_id,
+                        suffix=".text.json",
+                    )
                     if cached_bytes:
                         try:
                             td = json.loads(cached_bytes)
@@ -36015,7 +38049,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
                 # 3. Fall back to documents table excerpt
                 if doc_id:
-                    doc_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (doc_id,))
+                    doc_row = state.db.fetchone(
+                        """
+                        SELECT d.excerpt
+                        FROM documents d
+                        JOIN clients c ON c.id = d.client_id
+                        JOIN sandboxes s ON s.id = c.sandbox_id
+                        WHERE d.id = ?
+                          AND COALESCE(c.sandbox_id, '') = ?
+                          AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                        LIMIT 1
+                        """,
+                        (
+                            doc_id,
+                            task_sandbox_id,
+                            workspace_context.organization_id,
+                            workspace_context.organization_id,
+                        ),
+                    )
                     if doc_row and doc_row["excerpt"]:
                         excerpt = str(doc_row["excerpt"]).strip()[:900]
                         if excerpt:
@@ -36038,7 +38089,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ORDER BY e.reviewed_at DESC
             LIMIT 1
             """,
-            (task_id, active_business_sandbox_id(), active_business_sandbox_id()),
+            (local_task_id, task_sandbox_id, task_sandbox_id),
         )
         if review_row and review_row["note"]:
             bundle["reviewNote"] = str(review_row["note"]).strip()[:200]
@@ -36063,8 +38114,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return bundle
 
     def _build_smart_brief_from_hints(task_id: str, title: str, desc: str, client_id: str | None, event_line_id: str | None, frontend_attachment_titles: list[str] | None = None) -> TaskSmartBriefRecord:
+        workspace_context = _active_workspace_context_snapshot()
+        task_scope = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(task_scope["id"] or "").strip()
         # Check cache first — smart brief is expensive (calls AI API ~10-16s)
-        cache_key = f"smart_brief_cache::{task_id}"
+        cache_key = f"smart_brief_cache::{workspace_context.sandbox_id}::{local_task_id}"
         cached_raw = state.db.get_setting(cache_key, "")
         if cached_raw:
             try:
@@ -36232,13 +38286,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/tasks/{task_id}/smart-brief", response_model=TaskSmartBriefRecord)
     def get_task_smart_brief(task_id: str) -> TaskSmartBriefRecord:
         try:
+            task_scope = require_task_in_active_sandbox(task_id)
+            local_task_id = str(task_scope["id"] or "")
             if not get_cloud_token():
-                task_row = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
-                if not task_row:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                task = fetch_tasks("t.id = ?", (task_id,))[0]
+                task = fetch_tasks("t.id = ?", (local_task_id,))[0]
             else:
-                task = fetch_cloud_task_by_id(task_id)
+                cloud_task_id = str(task_scope["cloud_id"] or local_task_id)
+                task = fetch_cloud_task_by_id(cloud_task_id)
             return _build_smart_brief_for_task(task)
         except HTTPException:
             raise
@@ -37289,12 +39343,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"附件上传失败：{exc}") from exc
 
-    def _build_local_event_line_report_snapshot(event_line_id: str) -> dict:
+    def _build_local_event_line_report_snapshot(
+        event_line_id: str,
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> dict:
         import mimetypes
 
-        row = state.db.fetchone("SELECT * FROM event_lines WHERE id = ?", (event_line_id,))
-        if not row:
-            raise HTTPException(status_code=404, detail="Event line not found")
+        row = _event_line_in_workspace(event_line_id, workspace_context)
+        event_line_id = str(row["id"])
 
         activity_rows = state.db.fetchall(
             """
@@ -37344,17 +39401,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         task_attachment_rows = state.db.fetchall(
             f"""
-            SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind
+            SELECT id, task_id, client_id, event_line_id, title, path, kind,
+                   size_bytes, created_at, document_id,
+                   'task_attachments' AS source_table
             FROM task_attachments
             WHERE {task_attachment_where}
             UNION ALL
-            SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind
+            SELECT id, task_id, client_id, event_line_id, title, path, kind,
+                   size_bytes, created_at, document_id,
+                   'task_attachments_cloud' AS source_table
             FROM task_attachments_cloud
             WHERE {task_attachment_where}
             ORDER BY created_at ASC
             """,
             tuple(task_attachment_params + task_attachment_params),
         )
+        task_attachment_rows = [
+            attachment_row
+            for attachment_row in task_attachment_rows
+            if _attachment_row_matches_workspace(
+                str(attachment_row["source_table"]),
+                attachment_row,
+                workspace_context,
+            )
+        ]
         for attachment_row in task_attachment_rows:
             task_id = str(attachment_row["task_id"] or "").strip()
             if task_id:
@@ -37367,13 +39437,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         event_attachment_rows = state.db.fetchall(
             f"""
-            SELECT id, document_id, file_name, file_type, uploaded_by, uploaded_at, local_path, preview_url
+            SELECT id, event_line_id, document_id, file_name, file_type,
+                   uploaded_by, uploaded_at, local_path, preview_url
             FROM event_line_attachments
             WHERE {event_attachment_where}
             ORDER BY uploaded_at ASC
             """,
             tuple(event_attachment_params),
         )
+        event_attachment_rows = [
+            attachment_row
+            for attachment_row in event_attachment_rows
+            if _attachment_row_matches_workspace(
+                "event_line_attachments",
+                attachment_row,
+                workspace_context,
+            )
+        ]
 
         def _guess_mime(title: str, path: str = "") -> str | None:
             guessed, _encoding = mimetypes.guess_type(path or title)
@@ -37404,15 +39484,40 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "chunkCount": 0,
                     "sectionCount": 0,
                 }
-            document_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (normalized_doc_id,))
+            document_row = state.db.fetchone(
+                "SELECT client_id, excerpt FROM documents WHERE id = ? LIMIT 1",
+                (normalized_doc_id,),
+            )
+            if not document_row:
+                return {
+                    "documentId": None,
+                    "parseStatus": "missing_document",
+                    "parsedPreview": "",
+                    "chunkCount": 0,
+                    "sectionCount": 0,
+                }
+            try:
+                scoped_document_client = require_client_in_workspace(
+                    str(document_row["client_id"] or ""),
+                    workspace_context,
+                )
+            except HTTPException:
+                return {
+                    "documentId": None,
+                    "parseStatus": "missing_document",
+                    "parsedPreview": "",
+                    "chunkCount": 0,
+                    "sectionCount": 0,
+                }
             v2_row = state.db.fetchone(
                 """
                 SELECT parse_status, preview_text, markdown_content, markdown_path, chunk_count, section_count
                 FROM v2_documents
                 WHERE document_id = ?
+                  AND client_id = ?
                 LIMIT 1
                 """,
-                (normalized_doc_id,),
+                (normalized_doc_id, str(scoped_document_client["id"])),
             )
             parse_status = "unparsed"
             preview = ""
@@ -37447,6 +39552,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if existing:
                 return existing
             client_id = str(row["primary_client_id"] or "").strip()
+            try:
+                scoped_client = require_client_in_workspace(client_id, workspace_context)
+                client_id = str(scoped_client["id"])
+            except HTTPException:
+                return None
             raw_path = str(att["local_path"] or "").strip()
             if not client_id or not raw_path:
                 return None
@@ -37506,8 +39616,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     ai_service=None,
                 )
             state.db.execute(
-                "UPDATE event_line_attachments SET document_id = ? WHERE id = ?",
-                (document_id, str(att["id"])),
+                """
+                UPDATE event_line_attachments
+                SET document_id = ?
+                WHERE id = ? AND event_line_id = ?
+                """,
+                (document_id, str(att["id"]), event_line_id),
             )
             return document_id
 
@@ -37612,9 +39726,38 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             return ""
         return text if len(text) <= limit else f"{text[: max(0, limit - 1)].rstrip()}…"
 
-    def _local_report_document_parse_info(document_id: str | None) -> dict[str, object]:
+    def _local_report_document_parse_info(
+        document_id: str | None,
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> dict[str, object]:
         normalized_doc_id = str(document_id or "").strip()
+        missing_document = {
+            "documentId": None,
+            "parseStatus": "missing_document",
+            "parsedPreview": "",
+            "chunkCount": 0,
+            "sectionCount": 0,
+        }
         if not normalized_doc_id:
+            return missing_document
+        document_row = state.db.fetchone(
+            "SELECT client_id, excerpt FROM documents WHERE id = ? LIMIT 1",
+            (normalized_doc_id,),
+        )
+        if not document_row:
+            return missing_document
+        try:
+            scoped_client = require_client_in_workspace(
+                str(document_row["client_id"] or ""),
+                workspace_context,
+            )
+        except HTTPException:
+            # Treat an out-of-workspace document exactly like a missing one so
+            # report enrichment cannot become a cross-sandbox ID oracle.
+            return missing_document
+        scoped_client_id = str(scoped_client["id"] or "")
+        if not scoped_client_id:
             return {
                 "documentId": None,
                 "parseStatus": "missing_document",
@@ -37622,15 +39765,14 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "chunkCount": 0,
                 "sectionCount": 0,
             }
-        document_row = state.db.fetchone("SELECT excerpt FROM documents WHERE id = ?", (normalized_doc_id,))
         v2_row = state.db.fetchone(
             """
             SELECT parse_status, preview_text, markdown_content, markdown_path, chunk_count, section_count
             FROM v2_documents
-            WHERE document_id = ?
+            WHERE document_id = ? AND client_id = ?
             LIMIT 1
             """,
-            (normalized_doc_id,),
+            (normalized_doc_id, scoped_client_id),
         )
         parse_status = "unparsed"
         preview = ""
@@ -37660,45 +39802,155 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "sectionCount": section_count,
         }
 
-    def _event_line_primary_client_id(event_line_id: str) -> str:
-        row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (event_line_id,))
-        return str(row["primary_client_id"] or "").strip() if row else ""
+    def _event_line_primary_client_id(
+        event_line_id: str,
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> str:
+        row = _event_line_in_workspace(event_line_id, workspace_context)
+        client_id = str(row["primary_client_id"] or "").strip()
+        if not client_id:
+            return ""
+        try:
+            client_row = require_client_in_workspace(client_id, workspace_context)
+        except HTTPException:
+            return ""
+        return str(client_row["id"] or "").strip()
 
-    def _document_id_for_report_attachment(attachment_id: str) -> str:
+    def _document_id_for_report_attachment(
+        attachment_id: str,
+        *,
+        workspace_context: WorkspaceContext,
+    ) -> str:
         if not attachment_id:
             return ""
         for table in ("task_attachments_cloud", "task_attachments", "event_line_attachments"):
-            row = state.db.fetchone(f"SELECT document_id FROM {table} WHERE id = ?", (attachment_id,))
-            if row and row["document_id"]:
+            row = state.db.fetchone(f"SELECT * FROM {table} WHERE id = ? LIMIT 1", (attachment_id,))
+            if (
+                row
+                and row["document_id"]
+                and _attachment_row_matches_workspace(table, row, workspace_context)
+            ):
                 return str(row["document_id"])
         return ""
 
-    def _ensure_cloud_event_attachment_document(event_line_id: str, attachment: dict) -> str | None:
+    def _ensure_cloud_event_attachment_document(
+        event_line_id: str,
+        attachment: dict,
+        *,
+        workspace_context: WorkspaceContext,
+        cloud_context: ScopedCloudContext | None,
+    ) -> str | None:
         attachment_id = str(attachment.get("id") or "").strip()
         if not attachment_id:
             return None
-        existing = state.db.fetchone("SELECT document_id FROM event_line_attachments WHERE id = ?", (attachment_id,))
-        if existing and existing["document_id"]:
-            return str(existing["document_id"])
-        client_id = _event_line_primary_client_id(event_line_id)
+        existing = state.db.fetchone(
+            "SELECT * FROM event_line_attachments WHERE id = ? LIMIT 1",
+            (attachment_id,),
+        )
+        if existing:
+            if not _attachment_row_matches_workspace(
+                "event_line_attachments",
+                existing,
+                workspace_context,
+            ):
+                logger.warning(
+                    "report attachment id collision rejected: attachment=%s sandbox=%s",
+                    attachment_id,
+                    workspace_context.sandbox_id,
+                )
+                return None
+            if existing["document_id"]:
+                return str(existing["document_id"])
+        client_id = _event_line_primary_client_id(
+            event_line_id,
+            workspace_context=workspace_context,
+        )
         if not client_id:
             return None
         download_url = str(attachment.get("downloadUrl") or "").strip()
         if not download_url:
             return None
+        cloud_base_url = str(workspace_context.cloud_api_url or "").strip().rstrip("/")
+        if not cloud_base_url:
+            return None
+        base_parts = urlparse(cloud_base_url)
+        if download_url.startswith("/") and not download_url.startswith("//"):
+            resolved_download_url = f"{cloud_base_url}{download_url}"
+        else:
+            download_parts = urlparse(download_url)
+            try:
+                base_port = base_parts.port or (443 if base_parts.scheme.lower() == "https" else 80)
+                download_port = download_parts.port or (
+                    443 if download_parts.scheme.lower() == "https" else 80
+                )
+            except ValueError:
+                return None
+            if (
+                download_parts.scheme not in {"http", "https"}
+                or not download_parts.netloc
+                or download_parts.scheme.lower() != base_parts.scheme.lower()
+                or (download_parts.hostname or "").lower() != (base_parts.hostname or "").lower()
+                or download_port != base_port
+            ):
+                logger.warning(
+                    "report attachment cross-origin download rejected: attachment=%s",
+                    attachment_id,
+                )
+                return None
+            resolved_download_url = download_url
         title = safe_filename(str(attachment.get("title") or "事件线附件"))
         timestamp = str(attachment.get("createdAt") or now_iso())
         kind = str(attachment.get("kind") or Path(title).suffix.lower().lstrip(".") or "file")
-        target_dir = state.data_dir / "event-line-attachments" / "cloud-cache" / event_line_id
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / safe_filename(f"{attachment_id}_{title}")
+        scope_component, cache_file_name = _att_cache_components(
+            sandbox_id=workspace_context.sandbox_id,
+            attachment_id=attachment_id,
+        )
+        target_path = (
+            state.data_dir
+            / "cache"
+            / "event-line-attachments"
+            / "scoped"
+            / scope_component
+            / cache_file_name
+        )
         try:
-            if not target_path.exists():
-                url = download_url if download_url.startswith("http") else f"{cloud_api_base_url()}{download_url}"
-                response = httpx.get(url, timeout=20.0, trust_env=False)
+            if _att_cache_read(
+                sandbox_id=workspace_context.sandbox_id,
+                attachment_id=attachment_id,
+            ) is None:
+                headers = (
+                    {"Authorization": f"Bearer {cloud_context.access_token}"}
+                    if cloud_context and cloud_context.access_token
+                    else {}
+                )
+                response = httpx.get(
+                    resolved_download_url,
+                    headers=headers,
+                    timeout=20.0,
+                    follow_redirects=False,
+                    trust_env=False,
+                )
                 if response.status_code >= 400 or not response.content:
                     return None
-                target_path.write_bytes(response.content)
+                _att_cache_write(
+                    sandbox_id=workspace_context.sandbox_id,
+                    attachment_id=attachment_id,
+                    data=response.content,
+                )
+                if _att_cache_read(
+                    sandbox_id=workspace_context.sandbox_id,
+                    attachment_id=attachment_id,
+                ) is None:
+                    return None
+            target_stat = target_path.lstat()
+            if (
+                not stat.S_ISREG(target_stat.st_mode)
+                or target_stat.st_uid != os.getuid()
+                or target_stat.st_nlink != 1
+                or target_stat.st_mode & 0o022
+            ):
+                return None
         except Exception as exc:
             logger.warning("event line cloud attachment download failed: %s", exc)
             return None
@@ -37764,6 +40016,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 document_id = excluded.document_id,
                 local_path = excluded.local_path,
                 preview_url = excluded.preview_url
+            WHERE event_line_attachments.event_line_id = excluded.event_line_id
             """,
             (
                 attachment_id,
@@ -37778,15 +40031,46 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 download_url,
             ),
         )
+        persisted_attachment = state.db.fetchone(
+            "SELECT event_line_id, document_id FROM event_line_attachments WHERE id = ? LIMIT 1",
+            (attachment_id,),
+        )
+        if (
+            not persisted_attachment
+            or str(persisted_attachment["event_line_id"] or "") != event_line_id
+            or str(persisted_attachment["document_id"] or "") != document_id
+        ):
+            logger.warning(
+                "report attachment binding race rejected: attachment=%s sandbox=%s",
+                attachment_id,
+                workspace_context.sandbox_id,
+            )
+            return None
         return document_id
 
-    def _enrich_report_snapshot_with_local_parse(payload: dict, event_line_id: str) -> dict:
+    def _enrich_report_snapshot_with_local_parse(
+        payload: dict,
+        event_line_id: str,
+        *,
+        workspace_context: WorkspaceContext,
+        cloud_context: ScopedCloudContext | None = None,
+    ) -> dict:
         import mimetypes
 
         attachments = payload.get("attachments")
         if not isinstance(attachments, list):
             attachments = []
             payload["attachments"] = attachments
+        # The snapshot route has already authorized this event line.  Record a
+        # short-lived scoped parent binding so cloud-only attachment IDs can be
+        # proxied without turning the public URL into a bearer-only ID oracle.
+        for attachment in attachments:
+            if isinstance(attachment, dict):
+                _remember_cloud_attachment_scope(
+                    workspace_context=workspace_context,
+                    attachment_id=str(attachment.get("id") or ""),
+                    event_line_id=event_line_id,
+                )
         existing_attachment_ids = {
             str(attachment.get("id") or "").strip()
             for attachment in attachments
@@ -37805,20 +40089,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             for attachment in attachments
             if isinstance(attachment, dict) and str(attachment.get("title") or "").strip()
         }
-        local_attachment_rows = state.db.fetchall(
-            """
-            SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind
-            FROM task_attachments_cloud
-            WHERE event_line_id = ?
-            UNION ALL
-            SELECT id, task_id, title, path, kind, size_bytes, created_at, document_id, 'task_attachment' AS source_kind
-            FROM task_attachments
-            WHERE event_line_id = ?
-            ORDER BY created_at ASC
-            """,
-            (event_line_id, event_line_id),
-        )
-        for row in local_attachment_rows:
+        local_attachment_rows: list[tuple[str, Any]] = []
+        for table in ("task_attachments_cloud", "task_attachments"):
+            for row in state.db.fetchall(
+                f"SELECT * FROM {table} WHERE event_line_id = ? ORDER BY created_at ASC",
+                (event_line_id,),
+            ):
+                if _attachment_row_matches_workspace(table, row, workspace_context):
+                    local_attachment_rows.append((table, row))
+        local_attachment_rows.sort(key=lambda entry: str(entry[1]["created_at"] or ""))
+        for _table, row in local_attachment_rows:
             attachment_id = str(row["id"] or "").strip()
             if not attachment_id or attachment_id in existing_attachment_ids:
                 continue
@@ -37838,7 +40118,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     continue
 
             guessed_mime, _encoding = mimetypes.guess_type(path or title)
-            parse_info = _local_report_document_parse_info(str(row["document_id"] or ""))
+            parse_info = _local_report_document_parse_info(
+                str(row["document_id"] or ""),
+                workspace_context=workspace_context,
+            )
             signature = (
                 title,
                 int(row["size_bytes"] or 0),
@@ -37901,13 +40184,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         })
         missing_task_ids = [task_id for task_id in referenced_task_ids if task_id not in existing_task_ids]
         if missing_task_ids:
-            placeholders = ", ".join("?" for _ in missing_task_ids)
             try:
-                tasks_payload.extend(
-                    task.model_dump(mode="json")
-                    for task in fetch_tasks(shared_task_where(f"t.id IN ({placeholders})"), tuple(missing_task_ids))
-                    if task.id not in existing_task_ids
-                )
+                scoped_task_ids: list[str] = []
+                for task_id in missing_task_ids:
+                    try:
+                        scoped_task = require_task_in_workspace(task_id, workspace_context)
+                    except HTTPException:
+                        continue
+                    scoped_task_ids.append(str(scoped_task["id"]))
+                if scoped_task_ids:
+                    placeholders = ", ".join("?" for _ in scoped_task_ids)
+                    with persisted_async_workspace_scope(workspace_context):
+                        tasks_payload.extend(
+                            task.model_dump(mode="json")
+                            for task in fetch_tasks(
+                                shared_task_where(f"t.id IN ({placeholders})"),
+                                tuple(scoped_task_ids),
+                            )
+                            if task.id not in existing_task_ids
+                        )
             except Exception as exc:
                 logger.warning("event line snapshot local task enrichment failed: %s", exc)
         for attachment in attachments:
@@ -37915,10 +40210,21 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 continue
             document_id = str(attachment.get("documentId") or "").strip()
             if not document_id:
-                document_id = _document_id_for_report_attachment(str(attachment.get("id") or "").strip())
+                document_id = _document_id_for_report_attachment(
+                    str(attachment.get("id") or "").strip(),
+                    workspace_context=workspace_context,
+                )
             if not document_id and str(attachment.get("sourceKind") or "") == "event_line_attachment":
-                document_id = _ensure_cloud_event_attachment_document(event_line_id, attachment) or ""
-            parse_info = _local_report_document_parse_info(document_id)
+                document_id = _ensure_cloud_event_attachment_document(
+                    event_line_id,
+                    attachment,
+                    workspace_context=workspace_context,
+                    cloud_context=cloud_context,
+                ) or ""
+            parse_info = _local_report_document_parse_info(
+                document_id,
+                workspace_context=workspace_context,
+            )
             if parse_info["documentId"]:
                 attachment["documentId"] = parse_info["documentId"]
                 attachment["parseStatus"] = parse_info["parseStatus"]
@@ -37980,21 +40286,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.get("/api/v1/event-lines/{event_line_id}/report-snapshot")
     def get_event_line_report_snapshot(event_line_id: str) -> dict:
-        row = require_event_line_in_active_sandbox(event_line_id)
+        workspace_context = _active_workspace_context_snapshot()
+        row = _event_line_in_workspace(event_line_id, workspace_context)
         local_event_line_id = str(row["id"])
         cloud_event_line_id = str(row["cloud_id"] or row["id"])
         cloud_error: HTTPException | None = None
-        if get_cloud_token():
+        scoped_cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if (
+            scoped_cloud_context is None
+            and workspace_context.kind == "organization"
+            and workspace_context.session_matches_workspace
+            and workspace_context.cloud_api_url
+            and (workspace_context.access_token or workspace_context.refresh_token)
+        ):
+            # Newly-created organization workspaces can have a sandbox-scoped
+            # token before their organization identity probe has populated an
+            # organization_id.  Keep that compatible path frozen to the same
+            # sandbox and URL instead of falling back to global active state.
+            scoped_cloud_context = ScopedCloudContext(
+                sandbox_id=workspace_context.sandbox_id,
+                organization_id=(
+                    workspace_context.organization_id
+                    or workspace_context.session_organization_id
+                ),
+                cloud_api_url=workspace_context.cloud_api_url.rstrip("/"),
+                access_token=workspace_context.access_token,
+                refresh_token=workspace_context.refresh_token,
+                cloud_instance_id=workspace_context.cloud_instance_id,
+            )
+        has_cloud_session = bool(scoped_cloud_context)
+        if workspace_context.kind != "organization":
+            has_cloud_session = bool(get_cloud_token())
+        if has_cloud_session:
             try:
-                payload = cloud_request("GET", f"/api/v1/event-lines/{cloud_event_line_id}/report-snapshot")
+                if scoped_cloud_context:
+                    payload = scoped_cloud_request(
+                        scoped_cloud_context,
+                        "GET",
+                        f"/api/v1/event-lines/{cloud_event_line_id}/report-snapshot",
+                    )
+                else:
+                    payload = cloud_request(
+                        "GET",
+                        f"/api/v1/event-lines/{cloud_event_line_id}/report-snapshot",
+                        base_url_override=workspace_context.cloud_api_url,
+                    )
                 if not isinstance(payload, dict):
                     raise HTTPException(status_code=502, detail="Invalid report snapshot payload")
-                return _enrich_report_snapshot_with_local_parse(payload, local_event_line_id)
+                return _enrich_report_snapshot_with_local_parse(
+                    payload,
+                    local_event_line_id,
+                    workspace_context=workspace_context,
+                    cloud_context=scoped_cloud_context,
+                )
             except HTTPException as exc:
                 cloud_error = exc
 
         try:
-            return _build_local_event_line_report_snapshot(local_event_line_id)
+            return _build_local_event_line_report_snapshot(
+                local_event_line_id,
+                workspace_context=workspace_context,
+            )
         except HTTPException as local_exc:
             if local_exc.status_code == 404 and cloud_error is not None:
                 raise cloud_error
@@ -38006,7 +40358,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.oxml.ns import qn
 
-        guarded_event_line = require_event_line_in_active_sandbox(event_line_id)
+        workspace_context = _active_workspace_context_snapshot()
+        guarded_event_line = _event_line_in_workspace(event_line_id, workspace_context)
         event_line_id = str(guarded_event_line["id"])
         doc = WordDocument()
 
@@ -38159,7 +40512,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         activities = draft.get("activities", [])
         visible_activities = [a for a in activities if not a.get("hidden")]
-        attachments = draft.get("attachments", [])
+        attachments: list[dict] = []
+        authorized_attachment_refs: dict[str, _ScopedAttachmentRef] = {}
+        for attachment in draft.get("attachments", []):
+            if not isinstance(attachment, dict):
+                raise HTTPException(status_code=404, detail="Attachment not found")
+            attachment_id = str(attachment.get("id") or "").strip()
+            authorized_attachment_refs[attachment_id] = _require_attachment_in_workspace(
+                attachment_id,
+                workspace_context,
+            )
+            attachments.append(attachment)
         tasks = draft.get("tasks", [])
         timeline_nodes = [item for item in draft.get("timelineNodes", []) if isinstance(item, dict)]
         if not timeline_nodes:
@@ -38750,17 +41113,34 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     mime = str(att.get("mimeType") or "").lower()
                     is_image = mime.startswith("image/") or att_title.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
                     is_doc_file = att_title.lower().endswith((".docx", ".doc", ".md", ".txt", ".pdf", ".xlsx", ".xls", ".pptx", ".ppt"))
-                    download_url = str(att.get("downloadUrl", ""))
+                    attachment_ref = authorized_attachment_refs.get(att_id)
+                    trusted_attachment_path = (
+                        f"/api/public/task-attachments/{quote(att_id, safe='')}"
+                        if attachment_ref is not None
+                        else ""
+                    )
+                    attachment_cloud_context = (
+                        attachment_ref.cloud_context
+                        if attachment_ref is not None
+                        else None
+                    )
 
                     if is_image and is_images_expanded:
                         # Show image inline (like preview expanded)
                         try:
-                            if download_url:
-                                img_resp = httpx.get(f"{cloud_api_base_url()}{download_url}", timeout=15.0, trust_env=False)
+                            if trusted_attachment_path and attachment_cloud_context is not None:
+                                img_resp = _scoped_cloud_raw_response(
+                                    attachment_cloud_context,
+                                    "GET",
+                                    trusted_attachment_path,
+                                    timeout=15.0,
+                                )
                                 if img_resp.status_code == 200:
                                     img_stream = _BytesIO(img_resp.content)
                                     doc.add_picture(img_stream, width=Inches(4.5))
                                     _styled_para(att_title, size=9, color=light_gray, space_after=6)
+                            elif trusted_attachment_path:
+                                _styled_para(f"（图片加载失败：{att_title}）", size=9, color=light_gray)
                         except Exception:
                             _styled_para(f"（图片加载失败：{att_title}）", size=9, color=light_gray)
 
@@ -38780,18 +41160,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         run.font.color.rgb = dark_color
 
                         # Fetch document summary
+                        doc_text = ""
                         try:
-                            text_resp = httpx.get(
-                                f"{cloud_api_base_url()}/api/public/task-attachments/{att_id}/text-content",
-                                timeout=15.0,
-                                trust_env=False,
-                            )
-                            doc_text = ""
-                            if text_resp.status_code == 200:
-                                text_data = text_resp.json()
-                                raw = str(text_data.get("text", "")).strip()
-                                if raw and "提取失败" not in raw and "No module" not in raw:
-                                    doc_text = raw
+                            if attachment_cloud_context is not None:
+                                text_resp = _scoped_cloud_raw_response(
+                                    attachment_cloud_context,
+                                    "GET",
+                                    f"{trusted_attachment_path}/text-content",
+                                    timeout=15.0,
+                                )
+                                if text_resp.status_code == 200:
+                                    text_data = text_resp.json()
+                                    raw = str(text_data.get("text", "")).strip()
+                                    if raw and "提取失败" not in raw and "No module" not in raw:
+                                        doc_text = raw
                             if doc_text:
                                 _styled_para(doc_text, size=9, color=mid_gray, space_after=6)
                             else:
@@ -38897,6 +41279,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """,
                 (local_event_line_id, active_business_sandbox_id()),
             )
+            attachment_workspace_context = _active_workspace_context_snapshot()
             for task_row in task_rows:
                 task_id = str(task_row["id"])
                 _sync_task_attachment_scope(
@@ -38909,6 +41292,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     next_client_id,
                     local_event_line_id,
                     cloud=False,
+                    attachment_scope_predicate=lambda table_name, attachment_row: _attachment_row_matches_workspace(
+                        table_name,
+                        attachment_row,
+                        attachment_workspace_context,
+                    ),
+                    target_scope_predicate=lambda target_client_id, target_event_line_id: _attachment_targets_match_workspace(
+                        target_client_id,
+                        target_event_line_id,
+                        attachment_workspace_context,
+                    ),
                 )
                 _sync_task_attachment_scope(
                     state.db,
@@ -38920,6 +41313,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     next_client_id,
                     local_event_line_id,
                     cloud=True,
+                    attachment_scope_predicate=lambda table_name, attachment_row: _attachment_row_matches_workspace(
+                        table_name,
+                        attachment_row,
+                        attachment_workspace_context,
+                    ),
+                    target_scope_predicate=lambda target_client_id, target_event_line_id: _attachment_targets_match_workspace(
+                        target_client_id,
+                        target_event_line_id,
+                        attachment_workspace_context,
+                    ),
                 )
             _sync_event_line_client_scope_records(
                 state.db,
@@ -41108,12 +43511,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.get("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
     def get_object_storage_settings_endpoint() -> ObjectStorageSettingsRecord:
         from app.services.object_storage.settings_store import get_object_storage_settings
-        if get_cloud_token():
-            _sync_object_storage_config_from_cloud()
+        scope = _capture_object_storage_request_scope()
+        if scope.cloud_context is not None:
+            _sync_object_storage_config_from_cloud(scope)
         return get_object_storage_settings(
             state.db,
-            redact_credentials=bool(get_cached_session_user()) and not current_session_is_admin(),
-            sandbox_id=get_active_sandbox_id(state.db),
+            redact_credentials=scope.organization_scoped and not scope.session_is_admin,
+            sandbox_id=scope.sandbox_id,
         )
 
     @app.put("/api/v1/settings/object-storage", response_model=ObjectStorageSettingsRecord)
@@ -41121,19 +43525,22 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         payload: ObjectStorageSettingsPayload,
     ) -> ObjectStorageSettingsRecord:
         from app.services.object_storage.settings_store import get_object_storage_settings, save_object_storage_settings
+        scope = _capture_object_storage_request_scope()
         provider_name = (payload.provider or "").strip()
         if not provider_name:
             raise HTTPException(status_code=400, detail="请选择对象存储服务商")
-        if get_cloud_token():
-            if not current_session_is_admin():
+        if scope.organization_scoped:
+            if not scope.session_user_present or scope.cloud_context is None:
+                raise HTTPException(status_code=401, detail="请先登录当前组织后再修改对象存储配置。")
+            if not scope.session_is_admin:
                 raise HTTPException(status_code=403, detail="只有组织管理员可以修改组织对象存储配置。")
-            sync_status = _push_object_storage_config_to_cloud(payload)
+            sync_status = _push_object_storage_config_to_cloud(payload, scope)
             if sync_status.get("state") == "failed":
                 raise HTTPException(status_code=502, detail=f"云端对象存储配置保存失败：{sync_status.get('reason') or '未知错误'}")
             next_record = get_object_storage_settings(
                 state.db,
                 redact_credentials=False,
-                sandbox_id=get_active_sandbox_id(state.db),
+                sandbox_id=scope.sandbox_id,
             )
         else:
             ensure_business_settings_editable()
@@ -41141,7 +43548,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 state.db,
                 payload,
                 now_iso=now_iso(),
-                sandbox_id=get_active_sandbox_id(state.db),
+                sandbox_id=scope.sandbox_id,
             )
         log_activity(
             "settings.object_storage.update",
@@ -42058,38 +44465,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 })
         return {"query": query, "matches": matches[:5]}
 
-    @app.post("/api/v1/clients", response_model=ClientSummary)
-    def create_client(
+    def _create_client_in_workspace(
         payload: ClientMutationPayload,
-        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-        actor_type: str = Header("human", alias="X-Actor-Type"),
-        actor_id: str = Header("", alias="X-Actor-Id"),
+        workspace_context: WorkspaceContext,
     ) -> ClientSummary:
-        # v2.2 F2.8 (N3 A6): 幂等性检查
-        _METHOD, _PATH = "POST", "/api/v1/clients"
-        _idemp = None
-        if idempotency_key:
-            from app.services.idempotency_store import (
-                IdempotencyKeyMismatchError,
-                get_idempotency_store,
-            )
-            _idemp = get_idempotency_store(state.db)
-            try:
-                _cached = _idemp.find(
-                    idempotency_key, _METHOD, _PATH,
-                    payload=payload.model_dump(),
-                )
-            except IdempotencyKeyMismatchError as _e:
-                raise HTTPException(status_code=422, detail=str(_e))
-            if _cached and _cached.status == "completed":
-                return ClientSummary.model_validate_json(_cached.response_body)
-            if _cached and _cached.status == "in_progress":
-                raise HTTPException(409, "Request still in progress, retry shortly")
-            _idemp.start(
-                idempotency_key, _METHOD, _PATH,
-                payload=payload.model_dump(),
-                actor_type=actor_type, actor_id=actor_id,
-            )
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Workspace not found")
         client_id = new_id("client")
         timestamp = now_iso()
         client_color = (payload.color or "").strip() or "#5B7BFE"
@@ -42104,7 +44485,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 client_id,
-                active_business_sandbox_id(),
+                workspace_context.sandbox_id,
                 payload.name,
                 payload.alias,
                 payload.domain,
@@ -42118,32 +44499,74 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 is_data_center_included_value,
             ),
         )
-        thread_id = new_id("thread")
-        state.db.execute(
-            "INSERT INTO chat_threads(id, client_id, title, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
-            (thread_id, client_id, "默认研判线程", timestamp, timestamp),
+        _insert_scoped_default_chat_thread(
+            client_id=client_id,
+            sandbox_id=workspace_context.sandbox_id,
+            timestamp=timestamp,
         )
         ensure_standard_client_folders(client_id)
-        log_activity("client.create", "client", client_id, payload.model_dump())
+        log_activity(
+            "client.create",
+            "client",
+            client_id,
+            payload.model_dump(),
+            actor_name=_workspace_actor_name(workspace_context),
+        )
         # 批 3：标 pending，挂 daemon Thread 推送到云端（不阻塞 HTTP 返回）
         state.db.execute(
             "UPDATE clients SET sync_status = 'pending', pending_sync_action = 'create' WHERE id = ?",
             (client_id,),
         )
         try:
-            sync_context = _capture_active_scoped_cloud_context()
+            sync_context = _scoped_cloud_context_from_workspace(workspace_context)
             if sync_context:
                 Thread(target=_try_cloud_sync_client, args=(client_id, "create"), kwargs={"context": sync_context}, daemon=True).start()
-        except Exception as exc:
+        except (AsyncJobScopeError, Exception) as exc:
             logger.warning("[CLIENT-SYNC] schedule create push failed: %s", exc)
-        # v2.2 F2.8: 缓存响应供 retry 复用
-        _result = build_client_summary(client_id)
-        if _idemp:
-            _idemp.complete(
-                idempotency_key, _METHOD, _PATH,
-                status=200, response_body=_result.model_dump(mode="json"),
+        return build_client_summary(client_id, workspace_context=workspace_context)
+
+    @app.post("/api/v1/clients", response_model=ClientSummary)
+    def create_client(
+        payload: ClientMutationPayload,
+        idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+        actor_type: str = Header("human", alias="X-Actor-Type"),
+        actor_id: str = Header("", alias="X-Actor-Id"),
+    ) -> ClientSummary:
+        workspace_context = _active_workspace_context_snapshot()
+        method, path = "POST", "/api/v1/clients"
+        key, store, scope, claim_token, cached = _begin_idempotent_create(
+            idempotency_key=idempotency_key,
+            method=method,
+            path=path,
+            payload=payload.model_dump(),
+            workspace_context=workspace_context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        if cached is not None:
+            return ClientSummary.model_validate_json(cached.response_body)
+        try:
+            result = _create_client_in_workspace(payload, workspace_context)
+        except Exception:
+            _mark_idempotent_create_failed(
+                store=store,
+                idempotency_key=key,
+                method=method,
+                path=path,
+                scope=scope,
+                claim_token=claim_token,
             )
-        return _result
+            raise
+        _complete_idempotent_create(
+            store=store,
+            idempotency_key=key,
+            method=method,
+            path=path,
+            scope=scope,
+            claim_token=claim_token,
+            response_body=result.model_dump(mode="json"),
+        )
+        return result
 
     @app.put("/api/v1/clients/{client_id}", response_model=ClientSummary)
     def update_client(client_id: str, payload: ClientMutationPayload) -> ClientSummary:
@@ -43068,17 +45491,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             logger.warning("[auto-repair] failed to enqueue context refresh for %s", client_id, exc_info=True)
 
     def _has_active_workspace_document_auto_repair_job(client_id: str) -> bool:
+        workspace_context = resolve_client_workspace_context(state.db, client_id)
         return bool(
             int(
                 state.db.scalar(
                     """
                     SELECT COUNT(1) AS count
                     FROM knowledge_jobs
-                    WHERE client_id = ?
+                    WHERE sandbox_id = ? AND client_id = ?
                       AND job_type = 'workspace_document_auto_repair'
                       AND status IN ('queued', 'running')
                     """,
-                    (client_id,),
+                    (workspace_context.sandbox_id, client_id),
                 )
             )
         )
@@ -43830,6 +46254,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         job = get_analysis_job(state.db, jobId)
         if job is None:
             raise HTTPException(status_code=404, detail="Analysis job not found")
+        require_client_in_active_sandbox(job.clientId)
         return job
 
     @app.get("/api/v1/analysis/jobs/{jobId}/stages", response_model=list[AnalysisJobStageRunRecord])
@@ -43837,6 +46262,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         job = get_analysis_job(state.db, jobId)
         if job is None:
             raise HTTPException(status_code=404, detail="Analysis job not found")
+        require_client_in_active_sandbox(job.clientId)
         return list_analysis_job_stages(state.db, jobId)
 
     @app.get("/api/v1/runtime/run-log/{runId}", response_model=RuntimeRunLogRecord)
@@ -47250,6 +49676,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     )
     def get_workspace_data_center_readiness(client_id: str) -> WorkspaceDataCenterReadinessRecord:
         client_summary = build_client_summary(client_id)
+        workspace_sandbox_id = active_business_sandbox_id()
         ensure_standard_client_folders(client_id)
         knowledge_status = build_knowledge_status_record(client_id)
         vector_status_payload = get_vector_index_manifest_status(
@@ -47469,15 +49896,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         running_knowledge_jobs = int(
             state.db.scalar(
-                "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status IN ('queued', 'running')",
-                (client_id,),
+                "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE sandbox_id = ? AND client_id = ? AND status IN ('queued', 'running')",
+                (workspace_sandbox_id, client_id),
             )
             or 0
         )
         failed_knowledge_jobs = int(
             state.db.scalar(
-                "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE client_id = ? AND status = 'failed'",
-                (client_id,),
+                "SELECT COUNT(1) AS count FROM knowledge_jobs WHERE sandbox_id = ? AND client_id = ? AND status = 'failed'",
+                (workspace_sandbox_id, client_id),
             )
             or 0
         )
@@ -47486,11 +49913,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SELECT e.job_id, e.level, e.message, e.created_at
             FROM knowledge_job_events e
             JOIN knowledge_jobs j ON j.id = e.job_id
-            WHERE j.client_id = ?
+            WHERE j.sandbox_id = ? AND j.client_id = ?
             ORDER BY e.created_at DESC
             LIMIT 20
             """,
-            (client_id,),
+            (workspace_sandbox_id, client_id),
         )
         latest_job_events = [
             WorkspaceDataCenterReadinessJobEventRecord(
@@ -47506,11 +49933,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT id, job_type, status, processed_items, total_items, last_error, updated_at
             FROM knowledge_jobs
-            WHERE client_id = ?
+            WHERE sandbox_id = ? AND client_id = ?
             ORDER BY updated_at DESC
             LIMIT 20
             """,
-            (client_id,),
+            (workspace_sandbox_id, client_id),
         )
         recent_jobs = [
             WorkspaceDataCenterReadinessRecentJobRecord(
@@ -47578,11 +50005,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """
             SELECT status, updated_at, last_error
             FROM knowledge_jobs
-            WHERE client_id = ? AND job_type = 'internet_enrichment'
+            WHERE sandbox_id = ? AND client_id = ? AND job_type = 'internet_enrichment'
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (client_id,),
+            (workspace_sandbox_id, client_id),
         )
         latest_internet_job_status = str(latest_internet_job_row["status"] or "").strip().lower() if latest_internet_job_row else ""
         if latest_internet_job_status in {"queued", "running"}:
@@ -49890,22 +52317,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/v1/clients/{client_id}/knowledge/rebuild", response_model=KnowledgeJobRecord)
     def rebuild_client_knowledge(client_id: str) -> KnowledgeJobRecord:
         build_client_summary(client_id)
+        workspace_context = resolve_client_workspace_context(state.db, client_id)
         primary_job_types = (*MAIN_KNOWLEDGE_STATUS_JOB_TYPES, "rebuild_client_knowledge")
         placeholders = ", ".join("?" for _ in primary_job_types)
         pending = state.db.fetchone(
             f"""
             SELECT *
             FROM knowledge_jobs
-            WHERE client_id = ? AND job_type IN ({placeholders}) AND status IN ('queued', 'running')
+            WHERE sandbox_id = ? AND client_id = ? AND job_type IN ({placeholders}) AND status IN ('queued', 'running')
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (client_id, *primary_job_types),
+            (workspace_context.sandbox_id, client_id, *primary_job_types),
         )
         if pending:
             return KnowledgeJobRecord(
                 id=str(pending["id"]),
                 clientId=str(pending["client_id"]),
+                sandboxId=str(pending["sandbox_id"]) if pending["sandbox_id"] else None,
                 jobType=str(pending["job_type"]),
                 status=str(pending["status"]),  # type: ignore[arg-type]
                 totalItems=int(pending["total_items"]),
@@ -50054,6 +52483,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return KnowledgeJobRecord(
             id=new_id("kjob"),
             clientId=client_id,
+            sandboxId=resolve_client_workspace_context(state.db, client_id).sandbox_id,
             jobType="generate_client_dna_candidates",
             status="completed",
             totalItems=0,
@@ -56536,7 +58966,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ),
         )[0]
 
-    def _enforce_local_task_list_default_for_scope(scope: str) -> None:
+    def _enforce_local_task_list_default_for_scope(
+        scope: str,
+        *,
+        sandbox_id: str | None = None,
+    ) -> None:
+        target_sandbox_id = sandbox_id or active_business_sandbox_id()
         default_row = state.db.fetchone(
             """
             SELECT id
@@ -56548,7 +58983,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ORDER BY sort_order ASC, id ASC
             LIMIT 1
             """,
-            (scope, active_business_sandbox_id()),
+            (scope, target_sandbox_id),
         )
         if not default_row:
             default_row = state.db.fetchone(
@@ -56561,7 +58996,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ORDER BY sort_order ASC, id ASC
                 LIMIT 1
                 """,
-                (scope, active_business_sandbox_id()),
+                (scope, target_sandbox_id),
             )
         if default_row:
             state.db.execute(
@@ -56570,7 +59005,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END
                 WHERE scope = ? AND COALESCE(sandbox_id, '') = ?
                 """,
-                (str(default_row["id"]), scope, active_business_sandbox_id()),
+                (str(default_row["id"]), scope, target_sandbox_id),
             )
 
     def _repair_local_duplicate_task_lists() -> TaskListDuplicateRepairResponse:
@@ -57139,39 +59574,41 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         request_sandbox_id: str = Header("", alias="X-Yiyu-Sandbox-Id"),
     ) -> TaskRecord:
         require_request_sandbox_matches_active(request_sandbox_id)
-        # v2.2 F2.8 (N3 A6): 幂等性检查 — 防 AI agent retry 重复创建
-        _METHOD, _PATH = "POST", "/api/v1/tasks"
-        _idemp = None
-        if idempotency_key:
-            from app.services.idempotency_store import (
-                IdempotencyKeyMismatchError,
-                get_idempotency_store,
+        workspace_context = _active_workspace_context_snapshot()
+        method, path = "POST", "/api/v1/tasks"
+        key, store, scope, claim_token, cached = _begin_idempotent_create(
+            idempotency_key=idempotency_key,
+            method=method,
+            path=path,
+            payload=payload.model_dump(),
+            workspace_context=workspace_context,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        if cached is not None:
+            return TaskRecord.model_validate_json(cached.response_body)
+        try:
+            result = create_task(payload, workspace_context=workspace_context)
+        except Exception:
+            _mark_idempotent_create_failed(
+                store=store,
+                idempotency_key=key,
+                method=method,
+                path=path,
+                scope=scope,
+                claim_token=claim_token,
             )
-            _idemp = get_idempotency_store(state.db)
-            try:
-                _cached = _idemp.find(
-                    idempotency_key, _METHOD, _PATH,
-                    payload=payload.model_dump(),
-                )
-            except IdempotencyKeyMismatchError as _e:
-                raise HTTPException(status_code=422, detail=str(_e))
-            if _cached and _cached.status == "completed":
-                return TaskRecord.model_validate_json(_cached.response_body)
-            if _cached and _cached.status == "in_progress":
-                raise HTTPException(409, "Request still in progress, retry shortly")
-            _idemp.start(
-                idempotency_key, _METHOD, _PATH,
-                payload=payload.model_dump(),
-                actor_type=actor_type, actor_id=actor_id,
-            )
-        # v2.2 F2.8: 调原业务 helper, 然后缓存响应
-        _result = create_task(payload)
-        if _idemp:
-            _idemp.complete(
-                idempotency_key, _METHOD, _PATH,
-                status=200, response_body=_result.model_dump(mode="json"),
-            )
-        return _result
+            raise
+        _complete_idempotent_create(
+            store=store,
+            idempotency_key=key,
+            method=method,
+            path=path,
+            scope=scope,
+            claim_token=claim_token,
+            response_body=result.model_dump(mode="json"),
+        )
+        return result
 
     @app.get("/api/v1/local/users/{user_id}/ai-delegations")
     def get_user_ai_delegations(user_id: str, week: str | None = None) -> dict:
@@ -57569,6 +60006,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         request_sandbox_id: str = Header("", alias="X-Yiyu-Sandbox-Id"),
     ) -> TaskRecord:
         require_request_sandbox_matches_active(request_sandbox_id)
+        workspace_context = _active_workspace_context_snapshot()
+        try:
+            sync_context = _scoped_cloud_context_from_workspace(workspace_context)
+        except AsyncJobScopeError:
+            sync_context = None
         existing_scope_row = state.db.fetchone(
             """
             SELECT client_id, event_line_id, project_module_id, project_flow_id
@@ -57578,19 +60020,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id, active_business_sandbox_id()),
+            (task_id, task_id, workspace_context.sandbox_id),
         )
         if existing_scope_row is None and state.db.fetchone(
             "SELECT id FROM tasks WHERE id = ? OR cloud_id = ? LIMIT 1",
             (task_id, task_id),
         ):
             raise HTTPException(status_code=404, detail="Task not found")
-        if not get_cloud_token():
-            row = require_task_in_active_sandbox(task_id)
+        if sync_context is None:
+            row = require_task_in_workspace(task_id, workspace_context)
             if payload.listId:
                 list_row = state.db.fetchone(
                     "SELECT * FROM task_lists WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-                    (payload.listId, active_business_sandbox_id()),
+                    (payload.listId, workspace_context.sandbox_id),
                 )
                 if not list_row or list_row["archived_at"]:
                     raise HTTPException(status_code=400, detail="任务清单无效")
@@ -57607,6 +60049,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             client_id, event_line_id = _normalize_task_client_and_event_line_refs(
                 next_client_id,
                 next_event_line_id,
+                workspace_context=workspace_context,
+                cloud_context=sync_context,
             )
             project_module_id = None if next_scope_mode == "PERSONAL_ONLY" else (payload.projectModuleId if "projectModuleId" in payload.model_fields_set else (str(row["project_module_id"]) if row["project_module_id"] else None))
             project_flow_id = None if next_scope_mode == "PERSONAL_ONLY" else (payload.projectFlowId if "projectFlowId" in payload.model_fields_set else (str(row["project_flow_id"]) if row["project_flow_id"] else None))
@@ -57619,12 +60063,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 task_desc=payload.desc if payload.desc is not None else str(row["description"]),
                 project_module_id=project_module.id if project_module else None,
                 project_flow_id=project_flow.id if project_flow else None,
+                sandbox_id=workspace_context.sandbox_id,
             )
             event_line_context = _event_line_snapshot_context(
                 state.db,
                 event_line_id,
                 None,
-                sandbox_id=active_business_sandbox_id(),
+                sandbox_id=workspace_context.sandbox_id,
             )
             attachment_count = int(state.db.scalar("SELECT COUNT(1) FROM task_attachments WHERE task_id = ?", (task_id,)) or 0)
             (
@@ -57814,6 +60259,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         )
                 except Exception as exc:
                     logger.warning("[task→commitment] mark fulfilled failed: %s", exc)
+            attachment_workspace_context = workspace_context
             _sync_task_attachment_scope(
                 state.db,
                 state.data_dir,
@@ -57824,6 +60270,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 client_id,
                 event_line_id,
                 cloud=False,
+                attachment_scope_predicate=lambda table_name, attachment_row: _attachment_row_matches_workspace(
+                    table_name,
+                    attachment_row,
+                    attachment_workspace_context,
+                ),
+                target_scope_predicate=lambda target_client_id, target_event_line_id: _attachment_targets_match_workspace(
+                    target_client_id,
+                    target_event_line_id,
+                    attachment_workspace_context,
+                ),
             )
             if merged["event_line_id"]:
                 old_status = str(row["status"])
@@ -57900,8 +60356,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                                 is_key,
                             ),
                         )
-            log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
-            updated_task = fetch_tasks("t.id = ?", (task_id,))[0]
+            log_activity(
+                "task.update",
+                "task",
+                task_id,
+                payload.model_dump(exclude_none=True),
+                actor_name=_workspace_actor_name(workspace_context),
+            )
+            updated_task = fetch_tasks(
+                "t.id = ?",
+                (task_id,),
+                workspace_context=workspace_context,
+            )[0]
             growth_user_id, growth_user_name = resolve_growth_actor()
             ingest_task_growth_candidate(
                 state.db,
@@ -58016,7 +60482,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             ORDER BY updated_at DESC
             LIMIT 1
             """,
-            (task_id, task_id, active_business_sandbox_id()),
+            (task_id, task_id, workspace_context.sandbox_id),
         )
         local_task_id = str(local_row_for_cloud["id"]) if local_row_for_cloud and local_row_for_cloud["id"] else task_id
         cloud_task_id = (
@@ -58026,9 +60492,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         )
         if "listId" in payload_fields:
             cloud_update_payload["listId"] = _ensure_local_task_list(
-                payload.listId or (str(local_row_for_cloud["list_id"]) if local_row_for_cloud and local_row_for_cloud["list_id"] else None)
+                payload.listId or (str(local_row_for_cloud["list_id"]) if local_row_for_cloud and local_row_for_cloud["list_id"] else None),
+                sandbox_id=workspace_context.sandbox_id,
             )
-        sync_context = _capture_active_scoped_cloud_context()
         try:
             if not sync_context:
                 raise HTTPException(status_code=503, detail="当前组织需要重新登录")
@@ -58089,7 +60555,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     sync_context.sandbox_id,
                 ),
             )
-            log_activity("task.update", "task", task_id, payload.model_dump(exclude_none=True))
+            log_activity(
+                "task.update",
+                "task",
+                task_id,
+                payload.model_dump(exclude_none=True),
+                actor_name=_workspace_actor_name(workspace_context),
+            )
             upserted_task_id = _upsert_cloud_task_shadow_local(
                 response_for_upsert,
                 target_sandbox_id=sync_context.sandbox_id,
@@ -58099,7 +60571,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ),
             )
             if upserted_task_id:
-                updated_task = fetch_tasks("t.id = ?", (upserted_task_id,))[0]
+                updated_task = fetch_tasks(
+                    "t.id = ?",
+                    (upserted_task_id,),
+                    workspace_context=workspace_context,
+                )[0]
             else:
                 updated_task = build_cloud_task(response, {})
         except Exception as error:
@@ -58113,7 +60589,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 ORDER BY updated_at DESC
                 LIMIT 1
                 """,
-                (task_id, task_id, active_business_sandbox_id()),
+                (task_id, task_id, workspace_context.sandbox_id),
             )
             if local_row:
                 local_id = str(local_row["id"])
@@ -58154,7 +60630,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     fallback_due_date = fallback_due_value
                 sync_error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
                 fallback_list_id = _ensure_local_task_list(
-                    payload.listId if "listId" in payload_fields else (str(local_row["list_id"]) if local_row["list_id"] else None)
+                    payload.listId if "listId" in payload_fields else (str(local_row["list_id"]) if local_row["list_id"] else None),
+                    sandbox_id=workspace_context.sandbox_id,
                 )
                 if "listId" in payload_fields:
                     cloud_update_payload["listId"] = fallback_list_id
@@ -58250,8 +60727,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                         local_id,
                     ),
                 )
-                log_activity("task.update", "task", local_id, payload.model_dump(exclude_none=True))
-                updated_task = fetch_tasks("t.id = ?", (local_id,))[0]
+                log_activity(
+                    "task.update",
+                    "task",
+                    local_id,
+                    payload.model_dump(exclude_none=True),
+                    actor_name=_workspace_actor_name(workspace_context),
+                )
+                updated_task = fetch_tasks(
+                    "t.id = ?",
+                    (local_id,),
+                    workspace_context=workspace_context,
+                )[0]
             else:
                 raise HTTPException(status_code=502, detail="云端更新失败，且本地无此任务副本")
         growth_user_id, growth_user_name = resolve_growth_actor()
@@ -58320,100 +60807,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "task",
             lambda: ingest_task_by_id(state.db, state.data_dir, updated_task.id),
         )
-        Thread(target=_precompute_task_understanding, args=(task_id,), daemon=True).start()
+        Thread(
+            target=_precompute_task_understanding,
+            args=(task_id, workspace_context),
+            daemon=True,
+        ).start()
         _invalidate_cloud_task_board_cache()
         return updated_task
 
     @app.delete("/api/v1/tasks/{task_id}")
     def delete_task(task_id: str) -> dict[str, bool]:
-        refresh_scope_row = state.db.fetchone(
-            """
-            SELECT client_id, event_line_id, project_module_id, project_flow_id
-            FROM tasks
-            WHERE (id = ? OR cloud_id = ?)
-              AND COALESCE(sandbox_id, '') = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (task_id, task_id, active_business_sandbox_id()),
-        )
-        refresh_client_id = (
-            str(refresh_scope_row["client_id"] or "").strip()
-            if refresh_scope_row and refresh_scope_row["client_id"]
-            else None
-        )
-        if not get_cloud_token():
-            row = require_task_in_active_sandbox(task_id)
-            task_title = str(row["title"] or "任务")
-            event_line_id = str(row["event_line_id"]) if row["event_line_id"] else None
-            client_id = str(row["client_id"]) if row["client_id"] else None
-            _safe_data_center_ingest(
-                "task_delete_lifecycle",
-                lambda: mark_ingested_source_inactive(
-                    state.db,
-                    source_type="task",
-                    source_id=task_id,
-                    task_id=task_id,
-                    lifecycle_status="deleted",
-                ),
-            )
-            # Sprint 2 (S2.4 local branch): 7 表 DELETE 包事务. 中途崩了不留 growth/activity 孤儿.
-            state.db.begin_transaction()
+        workspace_context = _active_workspace_context_snapshot()
+        delete_row = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(delete_row["id"] or "").strip()
+        cloud_task_id = str(delete_row["cloud_id"] or "").strip() or local_task_id
+        task_title = str(delete_row["title"] or "任务")
+        event_line_id = str(delete_row["event_line_id"] or "").strip() or None
+        client_id = str(delete_row["client_id"] or "").strip() or None
+
+        # Freeze the selected workspace before any network or database mutation.
+        # Reading the process-global active token again here allowed a concurrent
+        # workspace switch to send the delete to the wrong organization cloud.
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if cloud_context is not None:
             try:
-                state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?", (task_id,))
-                state.db.execute("DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?", (task_id,))
-                state.db.execute("DELETE FROM memory_facts WHERE scope_type = 'task' AND scope_id = ?", (task_id,))
-                state.db.execute(
-                    """
-                    DELETE FROM memory_facts
-                    WHERE source_type = 'task'
-                      AND source_id = ?
-                    """,
-                    (task_id,),
+                scoped_cloud_request(
+                    cloud_context,
+                    "DELETE",
+                    f"/api/v1/tasks/{cloud_task_id}",
                 )
-                state.db.execute("DELETE FROM growth_signal_events WHERE task_id = ?", (task_id,))
-                state.db.execute("DELETE FROM growth_evidence_records WHERE task_id = ?", (task_id,))
-                state.db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-                state.db.commit_transaction()
-            except Exception:
-                state.db.rollback_transaction()
-                raise
-            log_activity("task.delete", "task", task_id, {"title": task_title, "eventLineId": event_line_id, "clientId": client_id})
-            if event_line_id:
-                refresh_event_line_memory_snapshot(state.db, event_line_id)
-            if client_id:
-                refresh_organization_notebook_snapshot(state.db, client_id)
-            _enqueue_workspace_refresh_safe(
-                client_id=client_id or refresh_client_id,
-                source_type="task_delete",
-                source_id=task_id,
-                reason="task_deleted",
-                scope_type="task",
-                scope_id=task_id,
-                priority="normal",
+            except HTTPException:
+                pass  # Cloud task may not exist (local-only) — still clean up locally.
+
+        task_refs = tuple(dict.fromkeys((local_task_id, cloud_task_id)))
+        task_ref_placeholders = ", ".join("?" for _ in task_refs)
+        scoped_cloud_attachment_rows = [
+            row
+            for row in state.db.fetchall(
+                f"SELECT * FROM task_attachments_cloud WHERE task_id IN ({task_ref_placeholders})",
+                task_refs,
             )
-            return {"deleted": True}
-        # Cloud mode: try cloud delete, also clean up local data
-        delete_row = state.db.fetchone(
-            """
-            SELECT id, cloud_id
-            FROM tasks
-            WHERE (id = ? OR cloud_id = ?)
-              AND COALESCE(sandbox_id, '') = ?
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """,
-            (task_id, task_id, active_business_sandbox_id()),
-        )
-        if not delete_row:
-            raise HTTPException(status_code=404, detail="Task not found")
-        local_task_id = str(delete_row["id"]) if delete_row and delete_row["id"] else task_id
-        cloud_task_id = str(delete_row["cloud_id"]) if delete_row and delete_row["cloud_id"] else task_id
-        try:
-            cloud_request("DELETE", f"/api/v1/tasks/{cloud_task_id}")
-        except HTTPException:
-            pass  # Cloud task may not exist (local-only) — still clean up locally
-        # Clean up local data regardless
+            if _attachment_row_matches_workspace(
+                "task_attachments_cloud",
+                row,
+                workspace_context,
+            )
+        ]
+
         _safe_data_center_ingest(
             "task_delete_lifecycle",
             lambda: mark_ingested_source_inactive(
@@ -58424,31 +60864,115 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 lifecycle_status="deleted",
             ),
         )
-        # Sprint 2 (S2.4 cloud branch): 6 表 DELETE 包事务, 同 local branch 一致.
+        # Delete only rows bound to the authorized local task.  cloud_id is not
+        # globally unique across organization sandboxes and therefore is never
+        # sufficient authority for a broad DELETE.
         state.db.begin_transaction()
         try:
-            state.db.execute("DELETE FROM task_attachments_cloud WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
-            state.db.execute("DELETE FROM tasks WHERE id = ? OR cloud_id = ?", (local_task_id, cloud_task_id))
-            state.db.execute("DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id IN (?, ?)", (local_task_id, cloud_task_id))
+            for attachment_row in scoped_cloud_attachment_rows:
+                state.db.execute(
+                    """
+                    DELETE FROM task_attachments_cloud
+                    WHERE id = ?
+                      AND task_id = ?
+                      AND client_id IN (
+                          SELECT c.id
+                          FROM clients c
+                          JOIN sandboxes s ON s.id = c.sandbox_id
+                          WHERE COALESCE(c.sandbox_id, '') = ?
+                            AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                      )
+                    """,
+                    (
+                        str(attachment_row["id"]),
+                        str(attachment_row["task_id"]),
+                        workspace_context.sandbox_id,
+                        workspace_context.organization_id,
+                        workspace_context.organization_id,
+                    ),
+                )
             state.db.execute(
-                "DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id IN (?, ?)",
-                (local_task_id, cloud_task_id),
+                "DELETE FROM activity_logs WHERE entity_type = 'task' AND entity_id = ?",
+                (local_task_id,),
             )
-            state.db.execute("DELETE FROM growth_signal_events WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
-            state.db.execute("DELETE FROM growth_evidence_records WHERE task_id IN (?, ?)", (local_task_id, cloud_task_id))
+            state.db.execute(
+                "DELETE FROM event_line_activities WHERE source_type = 'task_activity' AND source_id = ?",
+                (local_task_id,),
+            )
+            state.db.execute(
+                """
+                DELETE FROM memory_facts
+                WHERE scope_type = 'task'
+                  AND scope_id = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                """,
+                (local_task_id, workspace_context.sandbox_id),
+            )
+            state.db.execute(
+                """
+                DELETE FROM memory_facts
+                WHERE source_type = 'task'
+                  AND source_id = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                """,
+                (local_task_id, workspace_context.sandbox_id),
+            )
+            state.db.execute(
+                """
+                DELETE FROM growth_signal_events
+                WHERE task_id = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM tasks t
+                      WHERE t.id = growth_signal_events.task_id
+                        AND COALESCE(t.sandbox_id, '') = ?
+                  )
+                """,
+                (local_task_id, workspace_context.sandbox_id),
+            )
+            state.db.execute(
+                """
+                DELETE FROM growth_evidence_records
+                WHERE task_id = ?
+                  AND EXISTS (
+                      SELECT 1
+                      FROM tasks t
+                      WHERE t.id = growth_evidence_records.task_id
+                        AND COALESCE(t.sandbox_id, '') = ?
+                  )
+                """,
+                (local_task_id, workspace_context.sandbox_id),
+            )
+            state.db.execute(
+                "DELETE FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (local_task_id, workspace_context.sandbox_id),
+            )
             state.db.commit_transaction()
         except Exception:
             state.db.rollback_transaction()
             raise
         _invalidate_cloud_task_board_cache()
-        log_activity("task.delete", "task", local_task_id, {})
+        log_activity(
+            "task.delete",
+            "task",
+            local_task_id,
+            {
+                "title": task_title,
+                "eventLineId": event_line_id,
+                "clientId": client_id,
+            },
+        )
+        if event_line_id:
+            refresh_event_line_memory_snapshot(state.db, event_line_id)
+        if client_id:
+            refresh_organization_notebook_snapshot(state.db, client_id)
         _enqueue_workspace_refresh_safe(
-            client_id=refresh_client_id,
+            client_id=client_id,
             source_type="task_delete",
-            source_id=task_id,
+            source_id=local_task_id,
             reason="task_deleted",
             scope_type="task",
-            scope_id=task_id,
+            scope_id=local_task_id,
             priority="normal",
         )
         return {"deleted": True}
@@ -58461,30 +60985,86 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         eventLineId: str | None = Form(default=None),
         taskTitle: str | None = Form(default=None),
     ) -> TaskRecord:
-        local_task_row = state.db.fetchone(
-            "SELECT * FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-            (task_id, active_business_sandbox_id()),
-        )
-        if local_task_row is None and state.db.fetchone("SELECT id FROM tasks WHERE id = ?", (task_id,)):
+        upload_workspace_context = _active_workspace_context_snapshot()
+        if not _workspace_claim_is_valid(upload_workspace_context):
             raise HTTPException(status_code=404, detail="Task not found")
+        upload_sandbox_id = str(upload_workspace_context.sandbox_id or "").strip()
+        try:
+            upload_cloud_context = _scoped_cloud_context_from_workspace(upload_workspace_context)
+        except AsyncJobScopeError:
+            upload_cloud_context = None
+        try:
+            local_task_row = require_task_in_workspace(task_id, upload_workspace_context)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            # A task that exists locally but belongs to another workspace must
+            # never be reinterpreted as a cloud-only task in the active scope.
+            foreign_task = state.db.fetchone(
+                """
+                SELECT id
+                FROM tasks
+                WHERE (id = ? OR cloud_id = ?)
+                  AND COALESCE(sandbox_id, '') = ?
+                LIMIT 1
+                """,
+                (task_id, task_id, upload_workspace_context.sandbox_id),
+            )
+            if not foreign_task:
+                foreign_task = state.db.fetchone(
+                    """
+                    SELECT id
+                    FROM tasks
+                    WHERE (id = ? OR cloud_id = ?)
+                      AND COALESCE(sandbox_id, '') <> ?
+                    LIMIT 1
+                    """,
+                    (task_id, task_id, upload_workspace_context.sandbox_id),
+                )
+            if foreign_task:
+                raise HTTPException(status_code=404, detail="Task not found") from exc
+            local_task_row = None
         is_cloud_task = local_task_row is None
+        storage_task_id = str(local_task_row["id"] or task_id) if local_task_row else task_id
+        cloud_upload_task_id = (
+            str(local_task_row["cloud_id"] or storage_task_id)
+            if local_task_row
+            else task_id
+        )
         # Allow offline upload — attachments are stored locally regardless of cloud status
 
-        resolved_client_id = (
-            str(local_task_row["client_id"]) if local_task_row and local_task_row["client_id"] else clientId
+        raw_event_line_id = (
+            str(local_task_row["event_line_id"] or "").strip()
+            if local_task_row and local_task_row["event_line_id"]
+            else str(eventLineId or "").strip()
         )
-        # Try to get clientId from event line if task doesn't have one
-        if not resolved_client_id:
-            el_id = str(local_task_row["event_line_id"]) if local_task_row and local_task_row["event_line_id"] else eventLineId
-            if el_id:
-                el_row = state.db.fetchone("SELECT primary_client_id FROM event_lines WHERE id = ?", (el_id,))
-                if el_row and el_row["primary_client_id"]:
-                    resolved_client_id = str(el_row["primary_client_id"])
+        event_line_row = None
+        resolved_event_line_id: str | None = None
+        cloud_upload_event_line_id: str | None = None
+        if raw_event_line_id:
+            event_line_row = _event_line_in_workspace(raw_event_line_id, upload_workspace_context)
+            resolved_event_line_id = str(event_line_row["id"] or "").strip() or None
+            cloud_upload_event_line_id = (
+                str(event_line_row["cloud_id"] or resolved_event_line_id or "").strip() or None
+            )
+            primary_client_ref = str(event_line_row["primary_client_id"] or "").strip()
+            if primary_client_ref:
+                # Validate the event line's own parent even when the task has a
+                # different (but still scoped) related client.
+                require_client_in_workspace(primary_client_ref, upload_workspace_context)
+
+        raw_client_id = (
+            str(local_task_row["client_id"] or "").strip()
+            if local_task_row and local_task_row["client_id"]
+            else str(clientId or "").strip()
+        )
+        if not raw_client_id and event_line_row is not None:
+            raw_client_id = str(event_line_row["primary_client_id"] or "").strip()
         # AUDIT-20260518-014 修复: 旧 fallback 用 "SELECT id FROM clients ORDER BY name LIMIT 1"
         # 任取一个客户作为归档目标. 录音转写会沉淀到工作台,归档到错的客户会污染客户资料、
         # 任务附件和 AI 摘要. 改为明确要求 client_id 必须从 task / event_line / 显式 form 拿到,
         # 都拿不到就 400, 让前端先选项目, 不静默写到错对象上.
-        if not resolved_client_id:
+        if not raw_client_id:
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -58492,12 +61072,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     "请先在任务编辑器选择客户/项目,或将该任务挂到事件线后再上传。"
                 ),
             )
+        scoped_client_row = require_client_in_workspace(raw_client_id, upload_workspace_context)
+        resolved_client_id = str(scoped_client_row["id"] or "").strip()
+
+        # All parent objects are now canonicalized and authorized.  Nothing
+        # above this point creates folders, writes files, or inserts rows.
         build_client_summary(resolved_client_id)
         ensure_standard_client_folders(resolved_client_id)
-
-        resolved_event_line_id = (
-            str(local_task_row["event_line_id"]) if local_task_row and local_task_row["event_line_id"] else eventLineId
-        )
         resolved_task_title = (
             str(local_task_row["title"]) if local_task_row and local_task_row["title"] else (taskTitle or file.filename or "任务附件")
         )
@@ -58559,7 +61140,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             if kept_id:
                 document_id = kept_id
         try:
-            document_row = require_document_in_active_sandbox(document_id)
+            document_row = state.db.fetchone(
+                """
+                SELECT d.*
+                FROM documents d
+                JOIN clients c ON c.id = d.client_id
+                JOIN sandboxes s ON s.id = c.sandbox_id
+                WHERE d.id = ?
+                  AND d.client_id = ?
+                  AND COALESCE(c.sandbox_id, '') = ?
+                  AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+                LIMIT 1
+                """,
+                (
+                    document_id,
+                    resolved_client_id,
+                    upload_workspace_context.sandbox_id,
+                    upload_workspace_context.organization_id,
+                    upload_workspace_context.organization_id,
+                ),
+            )
+            if not document_row:
+                raise HTTPException(status_code=404, detail="Document not found")
         except HTTPException as exc:
             if exc.status_code == 404:
                 raise HTTPException(status_code=500, detail="附件归档失败。") from exc
@@ -58573,7 +61175,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             """,
             (
                 attachment_id,
-                task_id,
+                storage_task_id,
                 resolved_client_id,
                 resolved_event_line_id,
                 document_id,
@@ -58618,7 +61220,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     f"任务附件已进入项目资料库：{document_row['title']}",
                     to_json(
                         {
-                            "taskId": task_id,
+                            "taskId": storage_task_id,
                             "documentId": document_id,
                             "clientId": resolved_client_id,
                             "path": str(document_row["path"]),
@@ -58630,7 +61232,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         log_activity(
             "task.attachment.upload",
             "task",
-            task_id,
+            storage_task_id,
             {
                 "attachmentId": attachment_id,
                 "documentId": document_id,
@@ -58643,22 +61245,23 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "task_attachment",
             lambda: ingest_task_attachment_by_id(state.db, state.data_dir, attachment_id),
         )
-        if resolved_event_line_id and get_cloud_token():
+        if resolved_event_line_id and upload_cloud_context is not None:
             import threading
 
             def _bg_upload():
                 try:
                     cloud_upload_file(
-                        f"/api/v1/tasks/{task_id}/attachments",
+                        f"/api/v1/tasks/{cloud_upload_task_id}/attachments",
                         file_name=upload_name,
                         file_content=content,
                         content_type=file.content_type or "application/octet-stream",
                         form_fields={
                             "clientId": resolved_client_id or "",
-                            "eventLineId": resolved_event_line_id,
+                            "eventLineId": cloud_upload_event_line_id or resolved_event_line_id,
                             "title": str(document_row["title"]),
                             "taskTitle": resolved_task_title,
                         },
+                        context=upload_cloud_context,
                     )
                 except Exception:
                     pass  # 云端上传失败不阻断本地流程
@@ -58688,7 +61291,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     if not text or len(text) < 50:
                         return
                     # Cache text-content locally
-                    _att_cache_write(attachment_id, json.dumps({"title": str(document_row["title"]), "text": text, "kind": att_kind}, ensure_ascii=False).encode("utf-8"), suffix=".text.json")
+                    _att_cache_write(
+                        sandbox_id=upload_sandbox_id,
+                        attachment_id=attachment_id,
+                        data=json.dumps(
+                            {"title": str(document_row["title"]), "text": text, "kind": att_kind},
+                            ensure_ascii=False,
+                        ).encode("utf-8"),
+                        suffix=".text.json",
+                    )
                     # AI summarize if available
                     health = state.ai.get_health()
                     if health.provider != "mock" and health.ready:
@@ -58730,7 +61341,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             user_id=quote_user_id,
                             user_name=quote_user_name,
                             author_display_name=quote_user_name,
-                            sandbox_id=active_business_sandbox_id(),
+                            sandbox_id=upload_sandbox_id,
                         )
                 except Exception:
                     pass  # 预处理失败不影响主流程
@@ -58741,13 +61352,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _invalidate_cloud_task_board_cache()
         # Always rebuild task from local data first (local-first principle)
         if is_cloud_task:
-            task_after_upload = fetch_cloud_task_by_id(task_id)
+            task_after_upload = fetch_cloud_task_by_id(
+                task_id,
+                workspace_context=upload_workspace_context,
+            )
             # Ensure local attachments are included even if cloud hasn't synced yet
-            local_atts = fetch_task_attachments(task_id, cloud=True)
+            local_atts = fetch_task_attachments(
+                storage_task_id,
+                cloud=True,
+                workspace_context=upload_workspace_context,
+            )
             if len(local_atts) > len(task_after_upload.attachments):
                 task_after_upload = task_after_upload.model_copy(update={"attachments": local_atts})
         else:
-            task_after_upload = fetch_tasks("t.id = ?", (task_id,))[0]
+            task_after_upload = fetch_tasks("t.id = ?", (storage_task_id,))[0]
         growth_user_id, growth_user_name = resolve_growth_actor()
         ingest_task_growth_candidate(
             state.db,
@@ -58764,7 +61382,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             source_id=attachment_id,
             reason="task_attachment_uploaded",
             scope_type="task",
-            scope_id=task_id,
+            scope_id=storage_task_id,
             priority="normal",
         )
         return task_after_upload
@@ -58779,52 +61397,111 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # syncKnowledge=true 时连带删除知识库（数据中心）里的文件 + 物理文件，
         # 让用户能"一键彻底清理"——不然附件 row 删了，知识库还残留就成了孤儿数据。
         # 弹窗里那个勾默认勾选，所以前端绝大多数请求会带 syncKnowledge=true。
-        att_row = state.db.fetchone(
-            """
-            SELECT id, task_id, client_id, document_id, path, title
-            FROM task_attachments
-            WHERE id = ? AND task_id = ?
-            UNION ALL
-            SELECT id, task_id, client_id, document_id, path, title
-            FROM task_attachments_cloud
-            WHERE id = ? AND task_id = ?
-            """,
-            (attachment_id, task_id, attachment_id, task_id),
-        )
-        if not att_row:
+        workspace_context = _active_workspace_context_snapshot()
+        task_scope = require_task_in_workspace(task_id, workspace_context)
+        local_task_id = str(task_scope["id"])
+        cloud_task_id = str(task_scope["cloud_id"] or "").strip()
+        task_refs = tuple(dict.fromkeys((local_task_id, cloud_task_id or local_task_id, task_id)))
+        task_ref_placeholders = ", ".join("?" for _ in task_refs)
+        scoped_attachment_rows: list[tuple[str, Any]] = []
+        for table_name in ("task_attachments", "task_attachments_cloud"):
+            candidate_rows = state.db.fetchall(
+                f"SELECT * FROM {table_name} WHERE id = ? AND task_id IN ({task_ref_placeholders})",
+                (attachment_id, *task_refs),
+            )
+            scoped_attachment_rows.extend(
+                (table_name, row)
+                for row in candidate_rows
+                if _attachment_row_matches_workspace(
+                    table_name,
+                    row,
+                    workspace_context,
+                )
+            )
+        if not scoped_attachment_rows:
             raise HTTPException(status_code=404, detail="附件不存在或已被删除")
+        att_row = scoped_attachment_rows[0][1]
         document_id = att_row["document_id"]
-        att_path = att_row["path"]
         att_title = att_row["title"]
-        # 先删两张可能命中的 attachment 行（cloud + local），保持幂等
-        state.db.execute("DELETE FROM task_attachments WHERE id = ?", (attachment_id,))
-        state.db.execute("DELETE FROM task_attachments_cloud WHERE id = ?", (attachment_id,))
+        document_ids = tuple(
+            dict.fromkeys(
+                str(row["document_id"] or "").strip()
+                for _, row in scoped_attachment_rows
+                if str(row["document_id"] or "").strip()
+            )
+        )
+        attachment_paths = tuple(
+            dict.fromkeys(
+                str(row["path"] or "").strip()
+                for _, row in scoped_attachment_rows
+                if str(row["path"] or "").strip()
+            )
+        )
+        # The same attachment id may exist in both local and cloud-shadow
+        # tables.  Delete only copies whose complete parent chain was
+        # authorized above; a matching id/task_id in the other table is not
+        # itself proof that the row belongs to this workspace.
+        for table_name, row in scoped_attachment_rows:
+            state.db.execute(
+                f"DELETE FROM {table_name} WHERE id = ? AND task_id = ?",
+                (str(row["id"]), str(row["task_id"])),
+            )
         knowledge_deleted = False
         file_deleted = False
         if syncKnowledge:
             # 删数据中心：v2_documents 没有声明 FK 到 documents，所以两边都要显式删；
             # v2_chunks/v2_sections/v2_chunk_entities 通过 v2_documents 的 ON DELETE
             # CASCADE 会自动清理，无需手动 DELETE。
-            if document_id:
+            for scoped_document_id in document_ids:
                 try:
-                    state.db.execute("DELETE FROM v2_documents WHERE document_id = ?", (document_id,))
-                    state.db.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-                    knowledge_deleted = True
+                    scoped_document = state.db.fetchone(
+                        """
+                        SELECT d.id
+                        FROM documents d
+                        JOIN clients c ON c.id = d.client_id
+                        WHERE d.id = ?
+                          AND COALESCE(c.sandbox_id, '') = ?
+                          AND (? = '' OR COALESCE(c.organization_id, '') = ?)
+                        """,
+                        (
+                            scoped_document_id,
+                            workspace_context.sandbox_id,
+                            workspace_context.organization_id,
+                            workspace_context.organization_id,
+                        ),
+                    )
+                    if scoped_document:
+                        state.db.execute(
+                            "DELETE FROM v2_documents WHERE document_id = ?",
+                            (scoped_document_id,),
+                        )
+                        state.db.execute(
+                            "DELETE FROM documents WHERE id = ?",
+                            (scoped_document_id,),
+                        )
+                        knowledge_deleted = True
                 except Exception:
-                    logger.exception("删除知识库文档失败 document_id=%s", document_id)
+                    logger.exception(
+                        "删除知识库文档失败 document_id=%s",
+                        scoped_document_id,
+                    )
             # 删物理文件
-            if att_path:
+            for attachment_path in attachment_paths:
                 try:
-                    p = Path(att_path)
-                    if p.exists() and p.is_file():
-                        p.unlink()
+                    p = Path(attachment_path)
+                    if not p.is_absolute():
+                        p = state.data_dir / p
+                    resolved_path = p.resolve()
+                    resolved_data_dir = state.data_dir.resolve()
+                    if resolved_data_dir in resolved_path.parents and resolved_path.is_file():
+                        resolved_path.unlink()
                         file_deleted = True
                 except Exception:
-                    logger.exception("删除附件物理文件失败 path=%s", att_path)
+                    logger.exception("删除附件物理文件失败 path=%s", attachment_path)
         log_activity(
             "task.attachment.delete",
             "task",
-            task_id,
+            local_task_id,
             {
                 "attachmentId": attachment_id,
                 "documentId": document_id,
@@ -58876,21 +61553,161 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             taskTitle=payload.taskTitle,
         )
 
-    def _resolve_task_cloud_ref(task_id: str) -> tuple[str, str, bool]:
-        row = state.db.fetchone(
-            "SELECT id, cloud_id, sync_status FROM tasks WHERE id = ? OR cloud_id = ?",
-            (task_id, task_id),
-        )
-        if not row:
-            return task_id, task_id, bool(get_cloud_token())
-        local_task_id = str(row["id"])
-        cloud_task_id = str(row["cloud_id"] or task_id).strip() or task_id
-        sync_status = str(row["sync_status"] or "").strip().lower()
-        return local_task_id, cloud_task_id, bool(cloud_task_id and (row["cloud_id"] or sync_status == "synced"))
+    def _workspace_session_user(workspace_context: WorkspaceContext) -> SessionUserRecord | None:
+        raw_user = workspace_context.session_user
+        if not isinstance(raw_user, dict) or not raw_user:
+            return None
+        try:
+            user = SessionUserRecord(**raw_user)
+        except Exception:
+            return None
+        if workspace_context.organization_id and user.organizationId != workspace_context.organization_id:
+            return None
+        return user
 
-    def _mark_task_confirmed_locally(task_id: str, user_id: str | None) -> TaskRecord:
+    def _resolve_task_action_scope(
+        task_id: str,
+        workspace_context: WorkspaceContext | None = None,
+    ):
+        frozen_context = workspace_context or _active_workspace_context_snapshot()
+        row = require_task_in_workspace(task_id, frozen_context)
+        local_task_id = str(row["id"])
+        cloud_task_id = str(row["cloud_id"] or local_task_id).strip() or local_task_id
+        sync_status = str(row["sync_status"] or "").strip().lower()
+        is_cloud_backed = bool(row["cloud_id"] or sync_status == "synced")
+        cloud_context = _scoped_cloud_context_from_workspace(frozen_context)
+        return (
+            frozen_context,
+            local_task_id,
+            cloud_task_id,
+            is_cloud_backed,
+            cloud_context,
+            _workspace_session_user(frozen_context),
+        )
+
+    def _task_record_in_workspace(task_id: str, workspace_context: WorkspaceContext) -> TaskRecord:
+        with persisted_async_workspace_scope(workspace_context):
+            tasks = fetch_tasks("t.id = ?", (task_id,))
+        if not tasks:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return tasks[0]
+
+    def _log_task_activity_in_workspace(
+        action: str,
+        task_id: str,
+        detail: dict[str, object],
+        workspace_context: WorkspaceContext,
+        session_user: SessionUserRecord | None,
+    ) -> None:
+        actor_name = session_user.fullName if session_user else current_operator_row()["name"]
+        state.db.execute(
+            """
+            INSERT INTO activity_logs(id, actor_name, action, entity_type, entity_id, detail_json, created_at)
+            SELECT ?, ?, ?, 'task', ?, ?, ?
+            WHERE EXISTS (
+                SELECT 1 FROM tasks t
+                WHERE t.id = ?
+                  AND COALESCE(t.sandbox_id, '') = ?
+                  AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+            )
+            """,
+            (
+                new_id("log"),
+                actor_name,
+                action,
+                task_id,
+                to_json(detail),
+                now_iso(),
+                task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
+        )
+        if state.system_logger:
+            state.system_logger.activity(action, "task", task_id, actor_name, detail)
+
+    def _upsert_task_note_in_workspace(
+        task_id: str,
+        note: str,
+        workspace_context: WorkspaceContext,
+    ) -> None:
+        existing = state.db.fetchone(
+            """
+            SELECT tn.id
+            FROM task_notes tn
+            JOIN tasks t ON t.id = tn.task_id
+            WHERE tn.task_id = ?
+              AND COALESCE(t.sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+            """,
+            (
+                task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
+        )
         timestamp = now_iso()
-        _mark_task_collaborator_handled(task_id, user_id, "accepted")
+        if existing:
+            state.db.execute(
+                """
+                UPDATE task_notes
+                SET note = ?, updated_at = ?
+                WHERE task_id = ?
+                  AND EXISTS (
+                      SELECT 1 FROM tasks t
+                      WHERE t.id = task_notes.task_id
+                        AND COALESCE(t.sandbox_id, '') = ?
+                        AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+                  )
+                """,
+                (
+                    note,
+                    timestamp,
+                    task_id,
+                    workspace_context.sandbox_id,
+                    workspace_context.organization_id,
+                    workspace_context.organization_id,
+                ),
+            )
+        else:
+            state.db.execute(
+                """
+                INSERT INTO task_notes(id, task_id, note, created_at, updated_at)
+                SELECT ?, ?, ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1 FROM tasks t
+                    WHERE t.id = ?
+                      AND COALESCE(t.sandbox_id, '') = ?
+                      AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+                )
+                """,
+                (
+                    new_id("tn"),
+                    task_id,
+                    note,
+                    timestamp,
+                    timestamp,
+                    task_id,
+                    workspace_context.sandbox_id,
+                    workspace_context.organization_id,
+                    workspace_context.organization_id,
+                ),
+            )
+        with persisted_async_workspace_scope(workspace_context):
+            _safe_data_center_ingest(
+                "task_note",
+                lambda: ingest_task_note_by_id(state.db, state.data_dir, task_id, note),
+            )
+
+    def _mark_task_confirmed_locally(
+        task_id: str,
+        user_id: str | None,
+        workspace_context: WorkspaceContext,
+    ) -> TaskRecord:
+        timestamp = now_iso()
+        _mark_task_collaborator_handled(task_id, user_id, "accepted", workspace_context)
         state.db.execute(
             """
             UPDATE tasks
@@ -58905,27 +61722,59 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 END,
                 updated_at = ?
             WHERE id = ?
+              AND COALESCE(sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(organization_id, '') = ?)
             """,
-            (timestamp, task_id),
+            (
+                timestamp,
+                task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
         )
-        return fetch_tasks("t.id = ?", (task_id,))[0]
+        return _task_record_in_workspace(task_id, workspace_context)
 
     @app.post("/api/v1/tasks/{task_id}/confirm", response_model=TaskRecord)
     def confirm_task(task_id: str) -> TaskRecord:
-        session_user = get_cached_session_user()
-        local_task_id, cloud_task_id, is_cloud_backed_task = _resolve_task_cloud_ref(task_id)
-        if get_cloud_token():
+        (
+            workspace_context,
+            local_task_id,
+            cloud_task_id,
+            is_cloud_backed_task,
+            cloud_context,
+            session_user,
+        ) = _resolve_task_action_scope(task_id)
+        if cloud_context:
             try:
-                user = require_session_user()
-                session_user = user
-                response = cloud_request("POST", f"/api/v1/tasks/{cloud_task_id}/collaborators/{user.id}/accept")
+                if session_user is None:
+                    raise HTTPException(status_code=401, detail="当前工作区缺少有效的组织用户身份")
+                response = scoped_cloud_request(
+                    cloud_context,
+                    "POST",
+                    f"/api/v1/tasks/{cloud_task_id}/collaborators/{session_user.id}/accept",
+                )
                 if isinstance(response, dict):
-                    log_activity("task.confirm", "task", local_task_id, {"userId": user.id})
-                    synced_task_id = _upsert_cloud_task_shadow_local(response) or local_task_id
+                    with persisted_async_workspace_scope(workspace_context):
+                        _upsert_cloud_task_shadow_local(
+                            response,
+                            target_sandbox_id=workspace_context.sandbox_id,
+                        )
                     # Even when cloud upsert skips stale payloads to protect local edits,
                     # the accept result itself is authoritative and must be reflected
                     # locally or the next task-board refresh will show the item in inbox again.
-                    return _mark_task_confirmed_locally(synced_task_id, user.id)
+                    _log_task_activity_in_workspace(
+                        "task.confirm",
+                        local_task_id,
+                        {"userId": session_user.id},
+                        workspace_context,
+                        session_user,
+                    )
+                    return _mark_task_confirmed_locally(
+                        local_task_id,
+                        session_user.id,
+                        workspace_context,
+                    )
                 if is_cloud_backed_task:
                     raise HTTPException(status_code=502, detail="云端协作确认返回了无效任务数据")
             except Exception as error:
@@ -58935,25 +61784,51 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     raise HTTPException(status_code=status_code, detail=f"云端协作确认失败：{detail}") from error
                 # Local-only tasks can still be accepted without cloud.
                 pass
-        log_activity("task.confirm", "task", local_task_id, {"userId": session_user.id if session_user else None})
-        return _mark_task_confirmed_locally(local_task_id, session_user.id if session_user else None)
+        _log_task_activity_in_workspace(
+            "task.confirm",
+            local_task_id,
+            {"userId": session_user.id if session_user else None},
+            workspace_context,
+            session_user,
+        )
+        return _mark_task_confirmed_locally(
+            local_task_id,
+            session_user.id if session_user else None,
+            workspace_context,
+        )
 
     @app.post("/api/v1/tasks/{task_id}/reject", response_model=TaskRecord)
     def reject_task(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
-        session_user = get_cached_session_user()
-        if get_cloud_token():
+        (
+            workspace_context,
+            local_task_id,
+            cloud_task_id,
+            _is_cloud_backed_task,
+            cloud_context,
+            session_user,
+        ) = _resolve_task_action_scope(task_id)
+        if cloud_context and session_user is not None:
             try:
-                user = require_session_user()
-                session_user = user
-                response = cloud_request(
+                response = scoped_cloud_request(
+                    cloud_context,
                     "POST",
-                    f"/api/v1/tasks/{task_id}/collaborators/{user.id}/return",
+                    f"/api/v1/tasks/{cloud_task_id}/collaborators/{session_user.id}/return",
                     json_body={"reason": payload.reason},
                 )
-                upsert_task_note(task_id, payload.reason)
-                log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": user.id})
+                _upsert_task_note_in_workspace(local_task_id, payload.reason, workspace_context)
+                _log_task_activity_in_workspace(
+                    "task.reject",
+                    local_task_id,
+                    {"reason": payload.reason, "userId": session_user.id},
+                    workspace_context,
+                    session_user,
+                )
                 if isinstance(response, dict):
-                    _upsert_cloud_task_shadow_local(response)
+                    with persisted_async_workspace_scope(workspace_context):
+                        _upsert_cloud_task_shadow_local(
+                            response,
+                            target_sandbox_id=workspace_context.sandbox_id,
+                        )
                     return build_cloud_task(response, {})
             except Exception:
                 pass  # cloud down — reject locally
@@ -58962,85 +61837,178 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         # 一个协作者退回会让整条任务被拒绝/隐藏, 影响发起人和其他协作者. 与云端 ACL 语义不一致.
         # 改为只更新当前协作者状态 (returned + reason), 不动 tasks.status / progress_status —
         # 发起人 / 负责人会通过任务详情的 collaborator-return 反馈看到退回, 再决定改写、重发或关闭整条任务.
-        _mark_task_collaborator_handled(task_id, session_user.id if session_user else None, "returned", reason=payload.reason)
+        _mark_task_collaborator_handled(
+            local_task_id,
+            session_user.id if session_user else None,
+            "returned",
+            workspace_context,
+            reason=payload.reason,
+        )
         # 仅刷 updated_at 让任务在列表/同步中重新排序到顶部, 不变更任务 status.
-        state.db.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (timestamp, task_id))
-        upsert_task_note(task_id, payload.reason)
-        log_activity("task.reject", "task", task_id, {"reason": payload.reason, "userId": session_user.id if session_user else None})
-        return fetch_tasks("t.id = ?", (task_id,))[0]
+        state.db.execute(
+            """
+            UPDATE tasks SET updated_at = ?
+            WHERE id = ?
+              AND COALESCE(sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(organization_id, '') = ?)
+            """,
+            (
+                timestamp,
+                local_task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
+        )
+        _upsert_task_note_in_workspace(local_task_id, payload.reason, workspace_context)
+        _log_task_activity_in_workspace(
+            "task.reject",
+            local_task_id,
+            {"reason": payload.reason, "userId": session_user.id if session_user else None},
+            workspace_context,
+            session_user,
+        )
+        return _task_record_in_workspace(local_task_id, workspace_context)
 
     @app.post("/api/v1/tasks/{task_id}/complete-with-review", response_model=TaskRecord)
     def complete_task_with_review(task_id: str, payload: TaskCompletionReviewPayload) -> TaskRecord:
-        if not get_cloud_token():
+        workspace_context, local_task_id, cloud_task_id, _, cloud_context, session_user = _resolve_task_action_scope(task_id)
+        if not cloud_context:
             raise HTTPException(status_code=400, detail="当前环境未启用组织复核链")
-        response = cloud_request(
+        response = scoped_cloud_request(
+            cloud_context,
             "POST",
-            f"/api/v1/tasks/{task_id}/complete-with-review",
+            f"/api/v1/tasks/{cloud_task_id}/complete-with-review",
             json_body=payload.model_dump(),
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.complete-with-review", "task", task_id, {"reviewNote": payload.reviewNote[:60]})
-        _upsert_cloud_task_shadow_local(response)
+        _log_task_activity_in_workspace(
+            "task.complete-with-review",
+            local_task_id,
+            {"reviewNote": payload.reviewNote[:60]},
+            workspace_context,
+            session_user,
+        )
+        with persisted_async_workspace_scope(workspace_context):
+            _upsert_cloud_task_shadow_local(response, target_sandbox_id=workspace_context.sandbox_id)
         return build_cloud_task(response, {})
 
     @app.post("/api/v1/tasks/{task_id}/review/approve", response_model=TaskRecord)
     def approve_task_review(task_id: str) -> TaskRecord:
-        if not get_cloud_token():
+        workspace_context, local_task_id, cloud_task_id, _, cloud_context, session_user = _resolve_task_action_scope(task_id)
+        if not cloud_context:
             raise HTTPException(status_code=400, detail="当前环境未启用组织复核链")
-        response = cloud_request("POST", f"/api/v1/tasks/{task_id}/review/approve")
+        response = scoped_cloud_request(cloud_context, "POST", f"/api/v1/tasks/{cloud_task_id}/review/approve")
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.review.approve", "task", task_id, {})
-        _upsert_cloud_task_shadow_local(response)
+        _log_task_activity_in_workspace(
+            "task.review.approve",
+            local_task_id,
+            {},
+            workspace_context,
+            session_user,
+        )
+        with persisted_async_workspace_scope(workspace_context):
+            _upsert_cloud_task_shadow_local(response, target_sandbox_id=workspace_context.sandbox_id)
         return build_cloud_task(response, {})
 
     @app.post("/api/v1/tasks/{task_id}/review/return", response_model=TaskRecord)
     def return_task_review(task_id: str, payload: TaskRejectPayload) -> TaskRecord:
-        if not get_cloud_token():
+        workspace_context, local_task_id, cloud_task_id, _, cloud_context, session_user = _resolve_task_action_scope(task_id)
+        if not cloud_context:
             raise HTTPException(status_code=400, detail="当前环境未启用组织复核链")
-        response = cloud_request(
+        response = scoped_cloud_request(
+            cloud_context,
             "POST",
-            f"/api/v1/tasks/{task_id}/review/return",
+            f"/api/v1/tasks/{cloud_task_id}/review/return",
             json_body={"reason": payload.reason},
         )
         if not isinstance(response, dict):
             raise HTTPException(status_code=502, detail="Invalid cloud task payload")
-        log_activity("task.review.return", "task", task_id, {"reason": payload.reason})
-        _upsert_cloud_task_shadow_local(response)
+        _log_task_activity_in_workspace(
+            "task.review.return",
+            local_task_id,
+            {"reason": payload.reason},
+            workspace_context,
+            session_user,
+        )
+        with persisted_async_workspace_scope(workspace_context):
+            _upsert_cloud_task_shadow_local(response, target_sandbox_id=workspace_context.sandbox_id)
         return build_cloud_task(response, {})
 
     @app.post("/api/v1/tasks/{task_id}/note", response_model=TaskRecord)
     def save_task_note(task_id: str, payload: TaskNotePayload) -> TaskRecord:
-        upsert_task_note(task_id, payload.note)
-        log_activity("task.note", "task", task_id, {"noteLength": len(payload.note)})
-        if not get_cloud_token():
-            state.db.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (now_iso(), task_id))
-            return fetch_tasks("t.id = ?", (task_id,))[0]
+        workspace_context, local_task_id, cloud_task_id, _, cloud_context, session_user = _resolve_task_action_scope(task_id)
+        _upsert_task_note_in_workspace(local_task_id, payload.note, workspace_context)
+        _log_task_activity_in_workspace(
+            "task.note",
+            local_task_id,
+            {"noteLength": len(payload.note)},
+            workspace_context,
+            session_user,
+        )
+        state.db.execute(
+            """
+            UPDATE tasks SET updated_at = ?
+            WHERE id = ?
+              AND COALESCE(sandbox_id, '') = ?
+              AND (? = '' OR COALESCE(organization_id, '') = ?)
+            """,
+            (
+                now_iso(),
+                local_task_id,
+                workspace_context.sandbox_id,
+                workspace_context.organization_id,
+                workspace_context.organization_id,
+            ),
+        )
+        if not cloud_context:
+            return _task_record_in_workspace(local_task_id, workspace_context)
         try:
-            cloud_request("POST", f"/api/v1/tasks/{task_id}/note", {"note": payload.note})
+            response = scoped_cloud_request(
+                cloud_context,
+                "POST",
+                f"/api/v1/tasks/{cloud_task_id}/note",
+                json_body={"note": payload.note},
+            )
+            if isinstance(response, dict):
+                with persisted_async_workspace_scope(workspace_context):
+                    _upsert_cloud_task_shadow_local(
+                        response,
+                        target_sandbox_id=workspace_context.sandbox_id,
+                    )
+                return build_cloud_task(response, {})
         except HTTPException:
             pass  # 云端保存失败时保留本地备注，不阻断用户操作
-        board = cloud_task_board()
-        task = next((item for item in board.tasks if item.id == task_id), None)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        return task
+        return _task_record_in_workspace(local_task_id, workspace_context)
 
     @app.get("/api/v1/tasks/{task_id}/activity", response_model=list[TaskActivityRecord])
     def get_task_activity(task_id: str) -> list[TaskActivityRecord]:
-        if not get_cloud_token():
-            if task_id.startswith("agent_task_"):
-                ensure_admin_for_sensitive_settings()
-                return build_agent_execution_task_activity(
-                    db=state.db,
-                    task_id=task_id,
-                    thread_sync_path=THREAD_SYNC_DOC_PATH,
-                )
+        workspace_context = _active_workspace_context_snapshot()
+        if not _workspace_claim_is_valid(workspace_context):
+            raise HTTPException(status_code=404, detail="Task not found")
+        cloud_context = _scoped_cloud_context_from_workspace(workspace_context)
+        if task_id.startswith("agent_task_") and not cloud_context:
+            ensure_admin_for_sensitive_settings()
+            return build_agent_execution_task_activity(
+                db=state.db,
+                task_id=task_id,
+                thread_sync_path=THREAD_SYNC_DOC_PATH,
+            )
+        (
+            workspace_context,
+            local_task_id,
+            cloud_task_id,
+            _,
+            cloud_context,
+            _,
+        ) = _resolve_task_action_scope(task_id, workspace_context)
+        if not cloud_context:
             return [
                 TaskActivityRecord(
                     id=str(row["id"]),
-                    taskId=task_id,
+                    taskId=local_task_id,
                     actorId=str(row["actor_name"] or "local"),
                     actorName=str(row["actor_name"] or "本地用户"),
                     eventType=str(row["action"]),
@@ -59049,17 +62017,25 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 )
                 for row in state.db.fetchall(
                     """
-                    SELECT *
-                    FROM activity_logs
-                    WHERE entity_type = 'task' AND entity_id = ?
-                    ORDER BY created_at DESC
+                    SELECT al.*
+                    FROM activity_logs al
+                    JOIN tasks t ON t.id = al.entity_id
+                    WHERE al.entity_type = 'task' AND al.entity_id = ?
+                      AND COALESCE(t.sandbox_id, '') = ?
+                      AND (? = '' OR COALESCE(t.organization_id, '') = ?)
+                    ORDER BY al.created_at DESC
                     LIMIT 50
                     """,
-                    (task_id,),
+                    (
+                        local_task_id,
+                        workspace_context.sandbox_id,
+                        workspace_context.organization_id,
+                        workspace_context.organization_id,
+                    ),
                 )
             ]
         try:
-            payload = cloud_request("GET", f"/api/v1/tasks/{task_id}/activity")
+            payload = scoped_cloud_request(cloud_context, "GET", f"/api/v1/tasks/{cloud_task_id}/activity")
             if isinstance(payload, list):
                 return [TaskActivityRecord(**item) for item in payload if isinstance(item, dict)]
         except Exception:

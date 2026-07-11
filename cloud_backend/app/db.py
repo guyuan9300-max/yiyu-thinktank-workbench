@@ -1202,6 +1202,19 @@ class Database:
                     FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS org_asr_config (
+                    org_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL DEFAULT 'doubao_file',
+                    app_id_encrypted TEXT NOT NULL DEFAULT '',
+                    app_id_nonce TEXT NOT NULL DEFAULT '',
+                    access_token_encrypted TEXT NOT NULL DEFAULT '',
+                    access_token_nonce TEXT NOT NULL DEFAULT '',
+                    configured_by TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(org_id) REFERENCES organizations(id) ON DELETE CASCADE,
+                    FOREIGN KEY(configured_by) REFERENCES employee_accounts(id) ON DELETE SET NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS org_object_storage_config (
                     org_id TEXT PRIMARY KEY,
                     provider TEXT NOT NULL DEFAULT '',

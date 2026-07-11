@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -53,12 +54,15 @@ class _DbLike(Protocol):
     def fetchone(self, query: str, params: tuple = ()) -> sqlite3.Row | None: ...
     def fetchall(self, query: str, params: tuple = ()) -> list[sqlite3.Row]: ...
     def execute(self, query: str, params: tuple = ()) -> None: ...
+    def run_in_transaction(self, callback, mode: str = "IMMEDIATE") -> Any: ...
 
 
 @dataclass(frozen=True)
 class CachedResponse:
     """命中的幂等缓存"""
     idempotency_key: str
+    sandbox_id: str
+    organization_id: str
     request_method: str
     request_path: str
     response_status: int
@@ -102,6 +106,29 @@ class IdempotencyKeyMismatchError(Exception):
         )
 
 
+class IdempotencyClaimConflictError(Exception):
+    """Another request already owns the same scoped idempotency identity."""
+
+
+def _normalized_scope(
+    sandbox_id: str,
+    organization_id: str,
+    actor_type: str,
+    actor_id: str,
+) -> tuple[str, str, str, str]:
+    sandbox = str(sandbox_id or "").strip()
+    organization = str(organization_id or "").strip()
+    actor_kind = str(actor_type or "").strip()
+    actor = str(actor_id or "").strip()
+    if not sandbox:
+        raise ValueError("sandbox_id is required for idempotency isolation")
+    if not actor:
+        raise ValueError("actor_id is required for idempotency isolation")
+    if not actor_kind:
+        raise ValueError("actor_type is required for idempotency isolation")
+    return sandbox, organization, actor_kind, actor
+
+
 class IdempotencyStore:
     """跟 Stripe Idempotency-Key 兼容的 store。
 
@@ -121,6 +148,11 @@ class IdempotencyStore:
         method: str,
         path: str,
         payload: dict[str, Any] | str | bytes | None = None,
+        *,
+        sandbox_id: str,
+        organization_id: str,
+        actor_id: str,
+        actor_type: str = "human",
     ) -> CachedResponse | None:
         """查找缓存。如果同 key 但 body 不同 → 抛 IdempotencyKeyMismatchError。
 
@@ -128,21 +160,29 @@ class IdempotencyStore:
         """
         if not idempotency_key:
             return None
+        sandbox_id, organization_id, actor_type, actor_id = _normalized_scope(
+            sandbox_id,
+            organization_id,
+            actor_type,
+            actor_id,
+        )
         row = self._db.fetchone(
             """
-            SELECT idempotency_key, request_method, request_path, request_body_hash,
+            SELECT sandbox_id, organization_id,
+                   idempotency_key, request_method, request_path, request_body_hash,
                    response_status, response_body, actor_type, actor_id,
                    created_at, expires_at, status
             FROM idempotency_keys
-            WHERE idempotency_key = ? AND request_method = ? AND request_path = ?
+            WHERE sandbox_id = ? AND organization_id = ? AND actor_type = ? AND actor_id = ?
+              AND idempotency_key = ? AND request_method = ? AND request_path = ?
             """,
-            (idempotency_key, method, path),
+            (sandbox_id, organization_id, actor_type, actor_id, idempotency_key, method, path),
         )
         if not row:
             return None
 
         # 检查过期
-        if str(row["expires_at"]) < _now_iso():
+        if str(row["expires_at"]) < _now_iso() or str(row["status"]) == "failed":
             # 过期 → 当作不存在 (cleanup 之后会清掉)
             return None
 
@@ -155,6 +195,8 @@ class IdempotencyStore:
 
         return CachedResponse(
             idempotency_key=str(row["idempotency_key"]),
+            sandbox_id=str(row["sandbox_id"]),
+            organization_id=str(row["organization_id"]),
             request_method=str(row["request_method"]),
             request_path=str(row["request_path"]),
             response_status=int(row["response_status"]),
@@ -173,28 +215,76 @@ class IdempotencyStore:
         path: str,
         payload: dict[str, Any] | str | bytes | None = None,
         *,
+        sandbox_id: str,
+        organization_id: str,
+        actor_id: str,
         actor_type: str = "human",
-        actor_id: str = "",
         ttl_hours: int = DEFAULT_TTL_HOURS,
-    ) -> None:
-        """标记一次幂等请求开始处理。如果 key 已存在 (UNIQUE), 抛错。"""
-        body_hash = _hash_body(payload)
-        self._db.execute(
-            """
-            INSERT INTO idempotency_keys (
-                idempotency_key, request_method, request_path,
-                request_body_hash,
-                response_status, response_body,
-                actor_type, actor_id,
-                created_at, expires_at, status
-            ) VALUES (?, ?, ?, ?, 0, '', ?, ?, ?, ?, 'in_progress')
-            """,
-            (
-                idempotency_key, method, path, body_hash,
-                actor_type, actor_id,
-                _now_iso(), _expires_at(ttl_hours),
-            ),
+    ) -> str:
+        """Atomically claim a scoped key, reusing expired/failed rows.
+
+        A live in-progress/completed identity raises IdempotencyClaimConflictError;
+        callers should re-read it and either replay or return 409.
+        """
+        sandbox_id, organization_id, actor_type, actor_id = _normalized_scope(
+            sandbox_id,
+            organization_id,
+            actor_type,
+            actor_id,
         )
+        body_hash = _hash_body(payload)
+        created_at = _now_iso()
+        expires_at = _expires_at(ttl_hours)
+        claim_token = uuid.uuid4().hex
+
+        def _claim(conn: sqlite3.Connection) -> None:
+            cursor = conn.execute(
+                """
+                INSERT INTO idempotency_keys (
+                    sandbox_id, organization_id,
+                    idempotency_key, request_method, request_path,
+                    request_body_hash,
+                    response_status, response_body,
+                    actor_type, actor_id,
+                    created_at, expires_at, status
+                    , claim_token
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?, ?, 'in_progress', ?)
+                ON CONFLICT(
+                    sandbox_id, organization_id, actor_type, actor_id,
+                    idempotency_key, request_method, request_path
+                ) DO UPDATE SET
+                    request_body_hash = excluded.request_body_hash,
+                    response_status = 0,
+                    response_body = '',
+                    actor_type = excluded.actor_type,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at,
+                    status = 'in_progress',
+                    claim_token = excluded.claim_token
+                WHERE idempotency_keys.status = 'failed'
+                   OR idempotency_keys.expires_at < excluded.created_at
+                """,
+                (
+                    sandbox_id,
+                    organization_id,
+                    idempotency_key,
+                    method,
+                    path,
+                    body_hash,
+                    actor_type,
+                    actor_id,
+                    created_at,
+                    expires_at,
+                    claim_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise IdempotencyClaimConflictError(
+                    f"Scoped Idempotency-Key '{idempotency_key}' is already claimed"
+                )
+
+        self._db.run_in_transaction(_claim, mode="IMMEDIATE")
+        return claim_token
 
     def complete(
         self,
@@ -202,38 +292,93 @@ class IdempotencyStore:
         method: str,
         path: str,
         *,
+        sandbox_id: str,
+        organization_id: str,
+        actor_id: str,
+        actor_type: str = "human",
+        claim_token: str,
         status: int,
         response_body: dict[str, Any] | str,
-    ) -> None:
+    ) -> bool:
         """标记成功, 缓存 response body 供后续 retry 复用。"""
         if isinstance(response_body, dict):
             body_str = json.dumps(response_body, ensure_ascii=False)
         else:
             body_str = response_body
-        self._db.execute(
-            """
-            UPDATE idempotency_keys
-            SET response_status = ?, response_body = ?, status = 'completed'
-            WHERE idempotency_key = ? AND request_method = ? AND request_path = ?
-            """,
-            (status, body_str, idempotency_key, method, path),
+        sandbox_id, organization_id, actor_type, actor_id = _normalized_scope(
+            sandbox_id,
+            organization_id,
+            actor_type,
+            actor_id,
         )
+        def _complete(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                """
+                UPDATE idempotency_keys
+                SET response_status = ?, response_body = ?, status = 'completed'
+                WHERE sandbox_id = ? AND organization_id = ? AND actor_type = ? AND actor_id = ?
+                  AND idempotency_key = ? AND request_method = ? AND request_path = ?
+                  AND status = 'in_progress' AND claim_token = ?
+                """,
+                (
+                    status,
+                    body_str,
+                    sandbox_id,
+                    organization_id,
+                    actor_type,
+                    actor_id,
+                    idempotency_key,
+                    method,
+                    path,
+                    claim_token,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._db.run_in_transaction(_complete, mode="IMMEDIATE"))
 
     def mark_failed(
         self,
         idempotency_key: str,
         method: str,
         path: str,
-    ) -> None:
+        *,
+        sandbox_id: str,
+        organization_id: str,
+        actor_id: str,
+        actor_type: str = "human",
+        claim_token: str,
+    ) -> bool:
         """标记失败 — 后续 retry 应该当作新请求, 不复用这条 (3.0 AI agent retry 容错)"""
-        self._db.execute(
-            """
-            UPDATE idempotency_keys
-            SET status = 'failed'
-            WHERE idempotency_key = ? AND request_method = ? AND request_path = ?
-            """,
-            (idempotency_key, method, path),
+        sandbox_id, organization_id, actor_type, actor_id = _normalized_scope(
+            sandbox_id,
+            organization_id,
+            actor_type,
+            actor_id,
         )
+        def _mark_failed(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute(
+                """
+                UPDATE idempotency_keys
+                SET status = 'failed'
+                WHERE sandbox_id = ? AND organization_id = ? AND actor_type = ? AND actor_id = ?
+                  AND idempotency_key = ? AND request_method = ? AND request_path = ?
+                  AND status = 'in_progress' AND claim_token = ?
+                """,
+                (
+                    sandbox_id,
+                    organization_id,
+                    actor_type,
+                    actor_id,
+                    idempotency_key,
+                    method,
+                    path,
+                    claim_token,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(self._db.run_in_transaction(_mark_failed, mode="IMMEDIATE"))
 
     def cleanup_expired(self) -> int:
         """清理过期记录 (定期跑, 不影响业务)。返回清理条数。

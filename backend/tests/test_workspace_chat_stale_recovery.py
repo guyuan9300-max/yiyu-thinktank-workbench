@@ -167,7 +167,7 @@ def test_stale_recovery_fails_running_long_answer_after_threshold(tmp_path: Path
     assert message["answerMode"] == "system_failure"
     assert message["failureReason"] == "analysis_run_stale_recovered"
     assert message["retrievalSummary"]["staleRecoveryBasis"] == "analysis_run.generating_long_answer.updated_at"
-    assert message["retrievalSummary"]["staleThresholdSeconds"] == 420
+    assert message["retrievalSummary"]["staleThresholdSeconds"] == 90
 
 
 def test_stale_recovery_preserves_partial_loading_content(tmp_path: Path):
