@@ -1,7 +1,7 @@
 # Cloud Backend S1A：Direct-ID 组织隔离矩阵
 
-日期：2026-07-11  
-基线：`origin/sync-0.28.1` + `d699a87`（create-task 组织隔离修复）  
+日期：2026-07-11
+基线：`origin/sync-0.28.1` + `d699a87`（create-task 组织隔离修复）
 范围：`cloud_backend/app/main.py` 中 task、attachment、owner、collaborator、org-link、event-line 的 direct-ID 读写、上传与删除路径。
 
 ## 1. 判定标准
