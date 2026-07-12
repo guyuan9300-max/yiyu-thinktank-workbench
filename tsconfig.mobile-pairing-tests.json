@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "composite": false,
+    "rootDir": "src",
+    "outDir": "tmp/mobile-pairing-tests"
+  },
+  "include": [
+    "src/shared/cloudApiUrl.ts",
+    "src/shared/cloudApiUrl.test.ts",
+    "src/shared/mobilePairingLink.ts",
+    "src/shared/mobilePairingLink.test.ts"
+  ],
+  "exclude": []
+}

@@ -533,6 +533,9 @@ import type { TaskAiParseResult } from './lib/api';
 import { SystemLogPanel } from './components/settings/SystemLogPanel';
 import { MaintenanceSyncPanel } from './components/settings/MaintenanceSyncPanel';
 import { TeamSyncPanel } from './components/settings/TeamSyncPanel';
+import { MobilePairingCard } from './components/settings/MobilePairingCard';
+import { resolveVerifiedMobilePairingInput } from '../shared/mobilePairingLink';
+import { CLOUD_API_URL_PREFIX, cloudApiHostValue, cloudApiUrlFromHost } from '../shared/cloudApiUrl';
 import { StrategicBrainView, type ThoughtTaskPayload, DuplicateDocumentsSection } from './components/strategic_accompaniment/StrategicBrainView';
 import { TopicsManagementView } from './components/topics/TopicsManagementView';
 import { IntelligenceStationView } from './components/intelligence/IntelligenceStationView';
@@ -1652,35 +1655,6 @@ function aiModelDisplayLabel(provider?: AiProvider | string | null, model?: stri
 function aiRouteLabel(provider?: AiProvider | string | null, model?: string | null, providerLabel?: string | null) {
   const label = aiModelDisplayLabel(provider, model, providerLabel);
   return label === 'AI' ? 'AI' : `AI · ${label}`;
-}
-
-const CLOUD_API_URL_PREFIX = 'https://';
-function cloudApiHostValue(rawUrl?: string | null) {
-  return String(rawUrl || '')
-    .trim()
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/.*$/, '');
-}
-
-function cloudApiUrlFromHost(rawHost?: string | null) {
-  const rawValue = String(rawHost || '').trim();
-  if (/^https?:\/\//i.test(rawValue)) {
-    try {
-      return new URL(rawValue).origin;
-    } catch {
-      return '';
-    }
-  }
-  const host = cloudApiHostValue(rawHost);
-  if (!host) return '';
-  const parsedHost = host.startsWith('[')
-    ? host.replace(/^\[([^\]]+)\].*$/, '$1').toLowerCase()
-    : host.split(':')[0].toLowerCase();
-  const ipv4Literal = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(parsedHost);
-  const scheme = parsedHost === 'localhost' || parsedHost === '::1' || parsedHost.startsWith('127.') || ipv4Literal
-    ? 'http://'
-    : CLOUD_API_URL_PREFIX;
-  return `${scheme}${host}`;
 }
 
 type HealthAiSnapshot = HealthResponse['ai'] | null | undefined;
@@ -31098,6 +31072,15 @@ export default function App() {
 
     const renderAccountSection = () => {
       const accountStatus = orgMembershipState.membershipStatus || currentSessionUser?.membershipStatus || 'none';
+      const mobilePairingInput = resolveVerifiedMobilePairingInput({
+        activeSandboxId: workspacesState?.activeSandboxId,
+        runtimeStatus: workspaceRuntimeStatus,
+        authenticated: hasAuthenticatedSession,
+        sessionMode: authState.sessionMode,
+        user: authState.user,
+        workspace: activeWorkspaceRecord,
+      });
+      const mobilePairingReady = Boolean(mobilePairingInput);
       const accountStatusTone: 'success' | 'warning' | 'neutral' =
         accountStatus === 'approved' ? 'success'
           : accountStatus === 'pending' ? 'warning'
@@ -31130,7 +31113,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* 3 段折叠区(zebra) */}
+          {/* 4 段折叠区(zebra) */}
           <div>
             {renderFoldable({
               key: 'identity',
@@ -31152,6 +31135,25 @@ export default function App() {
                 : { text: '已登录', tone: 'success' },
               tint: true,
               children: <AccountProfileCard />,
+            })}
+            {renderFoldable({
+              key: 'mobile-pairing',
+              eyebrow: 'MOBILE · 添加到手机',
+              title: '同步云地址 · 预填账号',
+              helper: '把当前活动工作空间的云地址和当前账号邮箱安全地带到手机；手机仍需自行输入密码登录。',
+              statusChip: mobilePairingReady
+                ? { text: '可添加', tone: 'success' }
+                : { text: '需连接云端', tone: 'neutral' },
+              tint: true,
+              children: (
+                <MobilePairingCard
+                  endpoint={mobilePairingInput?.endpoint}
+                  email={mobilePairingInput?.email}
+                  workspace={mobilePairingInput?.workspace}
+                  cloudInstanceId={mobilePairingInput?.cloudInstanceId}
+                  organizationId={mobilePairingInput?.organizationId}
+                />
+              ),
             })}
             {currentSessionUser && renderFoldable({
               key: 'password',

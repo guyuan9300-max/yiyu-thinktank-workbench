@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -41,6 +42,104 @@ def test_cloud_url_normalization_defaults_public_hosts_to_https() -> None:
     assert normalize_configured_cloud_api_url("http://cloud.example.test") == "http://cloud.example.test"
     assert normalize_configured_cloud_api_url("localhost:8000") == "http://localhost:8000"
     assert normalize_configured_cloud_api_url("127.0.0.1:8000") == "http://127.0.0.1:8000"
+
+
+def test_http_to_https_upgrade_preserves_session_only_for_verified_same_cloud_instance(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_xingcong",
+        organization_name="星丛",
+        cloud_api_url="http://118.145.244.188",
+        cloud_instance_id="cli_xingcong",
+    )
+    set_sandbox_setting(db, workspace.id, "cloud_access_token", "access-xingcong")
+    set_sandbox_setting(db, workspace.id, "cloud_refresh_token", "refresh-xingcong")
+    set_sandbox_setting(
+        db,
+        workspace.id,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "emp_xingcong",
+                "organizationId": "org_xingcong",
+                "organizationName": "星丛",
+                "email": "user@example.test",
+                "fullName": "用户",
+                "primaryRole": "admin",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+    def fake_request(method: str, url: str, **kwargs):
+        assert method == "GET"
+        assert url == "https://118.145.244.188/api/v1/cloud-instance"
+        assert not kwargs.get("headers", {}).get("Authorization")
+        return httpx.Response(
+            200,
+            json={"cloudInstanceId": "cli_xingcong"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr("app.main.httpx.request", fake_request)
+    response = client.post(
+        "/api/v1/settings",
+        json={"cloudApiUrl": "https://118.145.244.188"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert get_active_sandbox_setting(db, "cloud_api_url") == "https://118.145.244.188"
+    assert get_active_sandbox_setting(db, "cloud_access_token") == "access-xingcong"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token") == "refresh-xingcong"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user"))["organizationId"] == "org_xingcong"
+
+
+def test_http_to_https_upgrade_clears_session_when_cloud_instance_does_not_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    workspace = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_xingcong",
+        organization_name="星丛",
+        cloud_api_url="http://118.145.244.188",
+        cloud_instance_id="cli_xingcong",
+    )
+    set_sandbox_setting(db, workspace.id, "cloud_access_token", "access-xingcong")
+    set_sandbox_setting(db, workspace.id, "cloud_refresh_token", "refresh-xingcong")
+    set_sandbox_setting(
+        db,
+        workspace.id,
+        "cloud_session_user",
+        json.dumps({"organizationId": "org_xingcong"}, ensure_ascii=False),
+    )
+
+    def fake_request(method: str, url: str, **kwargs):
+        return httpx.Response(
+            200,
+            json={"cloudInstanceId": "cli_other"},
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr("app.main.httpx.request", fake_request)
+    response = client.post(
+        "/api/v1/settings",
+        json={"cloudApiUrl": "https://118.145.244.188"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert get_active_sandbox_setting(db, "cloud_access_token") == ""
+    assert get_active_sandbox_setting(db, "cloud_refresh_token") == ""
+    assert get_active_sandbox_setting(db, "cloud_session_user") == ""
 
 
 def test_new_database_bootstraps_local_workspace(tmp_path: Path) -> None:

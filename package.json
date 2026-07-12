@@ -24,6 +24,7 @@
     "build": "npm run build:main && npm run build:renderer && npm run build:backend-check && npm run build:version-manifest",
     "test:calendar": "npm run build:main && node --test build/shared/calendar.test.js",
     "test:month-multiday-completion": "node --test src/renderer/components/tasks/TaskCalendarView.month-multiday-completion.test.mjs",
+    "test:mobile-pairing": "tsc -p tsconfig.mobile-pairing-tests.json && node --test tmp/mobile-pairing-tests/shared/cloudApiUrl.test.js tmp/mobile-pairing-tests/shared/mobilePairingLink.test.js",
     "test:collab-merge": "npm run build:main && node scripts/test-collab-merge.mjs",
     "backend:test": "cd backend && uv run pytest",
     "cloud:test": "cd cloud_backend && uv run pytest",
