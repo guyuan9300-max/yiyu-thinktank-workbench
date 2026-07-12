@@ -23,6 +23,7 @@
     "build:mac-icon": "python3 scripts/generate-mac-icon.py",
     "build": "npm run build:main && npm run build:renderer && npm run build:backend-check && npm run build:version-manifest",
     "test:calendar": "tsc -p tsconfig.calendar-tests.json && node --test tmp/calendar-tests/shared/calendar.test.js tmp/calendar-tests/shared/china-calendar.test.js",
+    "test:mobile-pairing": "tsc -p tsconfig.mobile-pairing-tests.json && node --test tmp/mobile-pairing-tests/shared/cloudApiUrl.test.js tmp/mobile-pairing-tests/shared/mobilePairingLink.test.js",
     "test:collab-merge": "npm run build:main && node scripts/test-collab-merge.mjs",
     "backend:test": "cd backend && uv run pytest",
     "cloud:test": "cd cloud_backend && uv run pytest",

@@ -6590,9 +6590,66 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             state.maintenance_mode_entered_at = ""
         _persist_maintenance_state(False, "", "")
 
+    def _is_same_host_http_to_https_upgrade(current_url: str, next_url: str) -> bool:
+        try:
+            current = urlparse(current_url)
+            target = urlparse(next_url)
+            current_port = current.port
+            target_port = target.port
+        except ValueError:
+            return False
+        if current.scheme.lower() != "http" or target.scheme.lower() != "https":
+            return False
+        if not current.hostname or current.hostname.lower() != (target.hostname or "").lower():
+            return False
+        if current.username or current.password or target.username or target.password:
+            return False
+        if current.query or current.fragment or target.query or target.fragment:
+            return False
+        if current.path.rstrip("/") != target.path.rstrip("/"):
+            return False
+        default_upgrade_ports = current_port in {None, 80} and target_port in {None, 443}
+        same_explicit_port = current_port is not None and current_port == target_port
+        return default_upgrade_ports or same_explicit_port
+
+    def _verified_secure_upgrade_can_preserve_session(
+        current_cloud_api_url: str,
+        next_cloud_api_url: str,
+    ) -> bool:
+        if not _is_same_host_http_to_https_upgrade(current_cloud_api_url, next_cloud_api_url):
+            return False
+        workspace = get_active_sandbox(state.db)
+        expected_cloud_instance_id = str(workspace.cloudInstanceId or "").strip()
+        if workspace.kind != "organization" or not expected_cloud_instance_id:
+            return False
+        raw_session_user = get_active_sandbox_setting(state.db, "cloud_session_user", "")
+        if not _active_session_matches_workspace(raw_session_user):
+            return False
+        if not (
+            get_active_sandbox_setting(state.db, "cloud_access_token", "")
+            or get_active_sandbox_setting(state.db, "cloud_refresh_token", "")
+        ):
+            return False
+        observed_cloud_instance_id = _fetch_cloud_instance_id(next_cloud_api_url)
+        return bool(observed_cloud_instance_id) and hmac.compare_digest(
+            expected_cloud_instance_id,
+            observed_cloud_instance_id,
+        )
+
     def _set_active_workspace_cloud_api_url(next_cloud_api_url: str) -> None:
-        if next_cloud_api_url != get_active_sandbox_setting(state.db, "cloud_api_url", ""):
-            clear_cloud_session()
+        current_cloud_api_url = get_active_sandbox_setting(state.db, "cloud_api_url", "")
+        if next_cloud_api_url != current_cloud_api_url:
+            preserve_session = _verified_secure_upgrade_can_preserve_session(
+                current_cloud_api_url,
+                next_cloud_api_url,
+            )
+            if preserve_session:
+                logger.info(
+                    "[workspace-session] preserving session for verified HTTP-to-HTTPS upgrade: sandbox=%s",
+                    get_active_sandbox_id(state.db),
+                )
+            else:
+                clear_cloud_session()
         set_active_sandbox_setting(state.db, "cloud_api_url", next_cloud_api_url)
         _refresh_active_workspace_runtime()
 
