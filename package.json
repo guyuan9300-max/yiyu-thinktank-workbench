@@ -1,6 +1,6 @@
 {
   "name": "yiyu-thinktank-workbench",
-  "version": "0.28.1",
+  "version": "0.28.2",
   "description": "益语智库自用平台 V2.0 桌面版",
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -32,7 +32,7 @@
     "start:raw": "node scripts/run-local-electron.mjs .",
     "install:mac-local": "npm run dist:mac-local && node scripts/install-mac-app.mjs && node scripts/open-installed-app.mjs",
     "dist:mac": "node scripts/ensure-mac-release-prereqs.mjs && npm run build && npm run build:packaged-runtime && electron-builder --mac dmg zip -c.electronDist=node_modules/electron/dist && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库AI.app\"",
-    "dist:windows": "npm run build && npm run build:packaged-runtime && electron-builder --win nsis --x64 -c.publish.url=https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/windows/",
+    "dist:windows": "npm run build && npm run build:packaged-runtime && electron-builder --win nsis --x64 -c.publish.url=https://yiyu.love/api/v1/updates/public/windows/",
     "dist:mac-local": "npm run build && npm run build:packaged-runtime && electron-builder --dir -c.electronDist=node_modules/electron/dist -c.mac.identity=null -c.mac.hardenedRuntime=false -c.mac.gatekeeperAssess=false -c.mac.forceCodeSigning=false -c.mac.notarize=false && node scripts/stabilize-mac-app.mjs \"dist/mac-arm64/益语智库AI.app\" && node scripts/verify-packaged-app.mjs \"dist/mac-arm64/益语智库AI.app\"",
     "release:mac:doctor": "node scripts/inspect-mac-release-readiness.mjs",
     "release:mac:doctor:strict": "node scripts/inspect-mac-release-readiness.mjs --strict",
@@ -163,13 +163,12 @@
     },
     "publish": {
       "provider": "generic",
-      "url": "https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/",
+      "url": "https://yiyu.love/api/v1/updates/public/mac/",
       "channel": "latest"
     }
   },
   "dependencies": {
     "@mdxeditor/editor": "^4.0.0",
-    "electron-updater": "^6.8.3",
     "lucide-react": "^0.511.0",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",

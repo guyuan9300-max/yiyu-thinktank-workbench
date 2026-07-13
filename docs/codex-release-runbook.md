@@ -1,4 +1,6 @@
-# Codex 可执行发布手册：Mac 正式版到火山云 TOS
+# Codex 可执行发布手册：官网正式版
+
+> 当前规则：新版客户端统一从 `https://yiyu.love` 检查并下载安装包。旧 TOS 只用于首个迁移版本双发，以下涉及 TOS 的步骤不得作为后续常规发版入口。
 
 ## 触发语
 
@@ -6,7 +8,7 @@
 
 > 我已经提交最新修改到 main，你可以发布新版本了
 
-你要执行的是正式发版：从私有 GitHub `main` 拉取最新代码，构建签名并公证的 macOS 包，上传到益语官方火山云 TOS 更新源，让普通用户通过“检查更新”升级。
+你要执行的是正式发版：从私有 GitHub `main` 拉取最新代码，构建签名并公证的 macOS 包，在官网后台上传、填写版本说明并发布，让普通用户通过“检查更新”升级。
 
 不要把它理解为：
 
@@ -18,10 +20,10 @@
 ## 固定链路
 
 - 开发协作源：私有 GitHub 仓库 `origin/main`
-- 用户更新源：`https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/mac/`
-- 更新清单：`latest-mac.yml`
+- 用户更新源：`https://yiyu.love`
+- 版本接口：官网 `/api/v1/updates/.../latest`
 - 用户首次安装：DMG
-- 应用内更新：ZIP + blockmap + `latest-mac.yml`
+- 应用内更新：用户主动下载 DMG/EXE 并覆盖安装
 
 用户自己的组织云、对象存储、AI 配置不影响软件更新源。
 
@@ -33,26 +35,21 @@
 - 可用的 `Developer ID Application` 证书
 - Apple notarization 凭据
 - Xcode Command Line Tools，包括 `notarytool` 和 `stapler`
-- 已配置的 `tosutil`
-- TOS 写权限，目标 bucket 为 `yiyu-thinktank-releases`
+- 官网后台版本发布权限
 
-`tosutil` 配置方式：
-
-```bash
-tosutil config -i <AK> -k <SK> -e tos-cn-beijing.volces.com
-```
-
-AK/SK、Apple 密钥、GitHub 凭据不得写入仓库。
+Apple 密钥、官网后台凭据和 GitHub 凭据不得写入仓库。
 
 ## 标准发布命令
 
-优先使用总入口：
+先构建并验证正式包：
 
 ```bash
 git checkout main
 git pull --ff-only origin main
-npm run release:mac:tos
+npm run release:mac
 ```
+
+构建完成后在官网后台上传 DMG/EXE，填写新增功能、问题修复、体验优化并发布。随后验证官网版本接口、安装包 SHA512、HEAD 与 Range/206，并用旧版软件点击“检查更新”完成端到端验收。
 
 总入口会按顺序执行：
 

@@ -3,10 +3,7 @@ import crypto from 'node:crypto';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import electronUpdaterPkg from 'electron-updater';
-import type { OfficialPushUpdatePayload } from '../shared/types.js';
-
-const { autoUpdater } = electronUpdaterPkg;
+import type { OfficialPushUpdatePayload, ReleaseVersionMetadata } from '../shared/types.js';
 
 type UpdateEventKind =
   | 'checking'
@@ -31,6 +28,7 @@ interface UpdateEventPayload {
 }
 
 interface CentralReleaseUpdatePayload {
+  releaseId?: string | null;
   version?: string | null;
   releaseVersion?: string | null;
   platform?: string | null;
@@ -42,22 +40,15 @@ interface CentralReleaseUpdatePayload {
   sha512?: string | null;
   downloadUrl?: string | null;
   releaseDate?: string | null;
-}
-
-interface StaticFeedMetadata {
-  version: string;
-  downloadUrl: string | null;
-  fileName: string | null;
-  sizeBytes: number | null;
-  sha512: string | null;
-  releaseDate: string | null;
+  publishedAt?: string | null;
+  userNotes?: Record<string, string[]> | null;
 }
 
 const UPDATE_EVENT_CHANNEL = 'yiyu-workbench:update-event';
 const CHECK_DELAY_MS = 10_000;
-const RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const ORG_PUSH_RECHECK_INTERVAL_MS = 30_000;
-const RELEASE_SERVICE_BASE_URL = 'https://www.yiyu.love';
+const AUTOMATIC_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const RECHECK_TIMER_INTERVAL_MS = 60 * 60 * 1000;
+const RELEASE_SERVICE_BASE_URL = 'https://yiyu.love';
 
 type UpdatePlatform = 'mac' | 'windows';
 
@@ -68,22 +59,20 @@ function resolveUpdatePlatform(): UpdatePlatform | null {
 }
 
 const UPDATE_PLATFORM = resolveUpdatePlatform();
-const UPDATE_FEED_FILE = UPDATE_PLATFORM === 'windows' ? 'latest.yml' : 'latest-mac.yml';
-const UPDATE_FEED_BASE_URL = `https://yiyu-thinktank-releases.tos-cn-beijing.volces.com/desktop/${UPDATE_PLATFORM || 'mac'}/`;
-const UPDATE_FEED_URL = `${UPDATE_FEED_BASE_URL}${UPDATE_FEED_FILE}`;
+const UPDATE_FEED_BASE_URL = `${RELEASE_SERVICE_BASE_URL}/api/v1/updates/public/${UPDATE_PLATFORM || 'mac'}/`;
 const UPDATE_INSTALLER_EXT = UPDATE_PLATFORM === 'windows' ? 'exe' : 'dmg';
 
 let mainWindowRef: BrowserWindow | null = null;
 let setupDone = false;
 let recheckTimer: NodeJS.Timeout | null = null;
-let officialPushTimer: NodeJS.Timeout | null = null;
-// org 感知更新:登录后向官网中央发布服务登记组织身份;未设置时回退静态 TOS。
+// org 感知更新:登录后由官网判断定向版;未连接组织时使用官网公开版。
 let currentOrgCode: string | null = null;
-let currentFeedBaseUrl: string | null = null;
+let currentFeedBaseUrl: string | null = UPDATE_FEED_BASE_URL;
 let currentIdentityKey: string | null = null;
 let lastOfficialPush: OfficialPushUpdatePayload | null = null;
 let lastOfficialPushSignature: string | null = null;
-let standardUpdateReady = false;
+let lastSuccessfulUpdateCheckAt = 0;
+let automaticCheckInFlight: Promise<void> | null = null;
 
 export interface UpdateOrgIdentity {
   organizationId?: string | null;
@@ -103,20 +92,37 @@ function appendUpdaterLog(message: string): void {
   }
 }
 
-function computeFeedBaseUrl(): string {
-  if (currentOrgCode && currentFeedBaseUrl) {
-    return currentFeedBaseUrl;
-  }
-  // 兜底:未登录/无组织码 → 静态 TOS,与原行为一致,不破坏既有静默更新
-  return UPDATE_FEED_BASE_URL;
+function updateCheckStatePath(): string {
+  return path.join(app.getPath('userData'), 'runtime', 'update-check-state.json');
 }
 
-function applyFeedUrl(): void {
+function loadUpdateCheckState(): void {
   try {
-    autoUpdater.setFeedURL({ provider: 'generic', url: computeFeedBaseUrl() });
-  } catch (err) {
-    console.warn('[autoUpdater] setFeedURL failed:', err);
+    const parsed = JSON.parse(fs.readFileSync(updateCheckStatePath(), 'utf8')) as { lastSuccessfulUpdateCheckAt?: string };
+    const timestamp = Date.parse(parsed.lastSuccessfulUpdateCheckAt || '');
+    lastSuccessfulUpdateCheckAt = Number.isFinite(timestamp) ? timestamp : 0;
+  } catch {
+    lastSuccessfulUpdateCheckAt = 0;
   }
+}
+
+function markSuccessfulUpdateCheck(): void {
+  lastSuccessfulUpdateCheckAt = Date.now();
+  try {
+    const targetPath = updateCheckStatePath();
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    const tempPath = `${targetPath}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify({
+      lastSuccessfulUpdateCheckAt: new Date(lastSuccessfulUpdateCheckAt).toISOString(),
+    }), 'utf8');
+    fs.renameSync(tempPath, targetPath);
+  } catch (err) {
+    console.warn('[autoUpdater] persist update check state failed:', err);
+  }
+}
+
+function automaticUpdateCheckDue(): boolean {
+  return !lastSuccessfulUpdateCheckAt || Date.now() - lastSuccessfulUpdateCheckAt >= AUTOMATIC_CHECK_INTERVAL_MS;
 }
 
 function parseSemverish(value: string | null | undefined): [number, number, number] | null {
@@ -145,28 +151,18 @@ function buildOfficialPush(update: CentralReleaseUpdatePayload): OfficialPushUpd
   const packageKind: OfficialPushUpdatePayload['packageKind'] =
     update.packageKind === 'custom' || update.customPackageId ? 'custom' : 'release';
   const isCustom = packageKind === 'custom';
-  const versionDiffers = targetVersion !== currentVersion && releaseVersion !== currentVersion;
-  if (!versionDiffers && !isCustom) return null;
-
   const comparison = compareSemverish(releaseVersion || targetVersion, currentVersion);
-  const relation: OfficialPushUpdatePayload['relation'] = isCustom
-    ? 'switch-custom'
-    : comparison === 1
-      ? 'upgrade'
-      : comparison === -1
-        ? 'downgrade'
-        : versionDiffers
-          ? 'different'
-          : 'unknown';
+  // 官网更新只允许向前升级。无法比较、同版本和更低版本都不提示。
+  if (comparison !== 1) return null;
+  const relation: OfficialPushUpdatePayload['relation'] = isCustom ? 'switch-custom' : 'upgrade';
   const customName = String(update.customPackageName || '').trim();
   const title = isCustom
     ? `收到组织定制版：${customName || targetVersion}`
-    : relation === 'downgrade'
-      ? `收到官方回退推送：${targetVersion}`
-      : `收到益语智库官方推送：${targetVersion}`;
+    : `发现益语智库新版本：${targetVersion}`;
 
   return {
     title,
+    releaseId: update.releaseId || null,
     version: targetVersion,
     releaseVersion,
     currentVersion,
@@ -177,35 +173,8 @@ function buildOfficialPush(update: CentralReleaseUpdatePayload): OfficialPushUpd
     sizeBytes: typeof update.sizeBytes === 'number' ? update.sizeBytes : null,
     sha512: update.sha512 || null,
     downloadUrl: update.downloadUrl || null,
-    organizationCode: currentOrgCode,
-    relation,
-  };
-}
-
-function buildStaticReleasePush(feed: StaticFeedMetadata): OfficialPushUpdatePayload {
-  const currentVersion = app.getVersion();
-  const comparison = compareSemverish(feed.version, currentVersion);
-  const relation: OfficialPushUpdatePayload['relation'] = comparison === 1
-    ? 'upgrade'
-    : comparison === -1
-      ? 'downgrade'
-      : feed.version !== currentVersion
-        ? 'different'
-        : 'unknown';
-  return {
-    title: relation === 'downgrade'
-      ? `收到官方回退版本：${feed.version}`
-      : `发现益语智库官方版本：${feed.version}`,
-    version: feed.version,
-    releaseVersion: feed.version,
-    currentVersion,
-    packageKind: 'release',
-    customPackageId: null,
-    customPackageName: null,
-    fileName: feed.fileName,
-    sizeBytes: feed.sizeBytes,
-    sha512: feed.sha512,
-    downloadUrl: feed.downloadUrl,
+    publishedAt: update.publishedAt || update.releaseDate || null,
+    userNotes: update.userNotes && typeof update.userNotes === 'object' ? update.userNotes : {},
     organizationCode: currentOrgCode,
     relation,
   };
@@ -226,101 +195,6 @@ function normalizeSha512(value: string | null | undefined): string | null {
   if (!raw) return null;
   if (/^[a-f0-9]{128}$/i.test(raw)) return Buffer.from(raw, 'hex').toString('base64');
   return raw;
-}
-
-function parseYamlScalar(line: string): string | null {
-  const index = line.indexOf(':');
-  if (index < 0) return null;
-  const raw = line.slice(index + 1).trim();
-  if (!raw) return '';
-  return raw.replace(/^["']|["']$/g, '').trim();
-}
-
-function parseStaticFeedYaml(text: string): StaticFeedMetadata {
-  const lines = text.split(/\r?\n/);
-  let version = '';
-  let pathOrUrl = '';
-  let sha512 = '';
-  let sizeBytes: number | null = null;
-  let releaseDate: string | null = null;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('version:')) version = parseYamlScalar(trimmed) || '';
-    else if (trimmed.startsWith('path:')) pathOrUrl = parseYamlScalar(trimmed) || pathOrUrl;
-    else if ((trimmed.startsWith('url:') || trimmed.startsWith('- url:')) && !pathOrUrl) pathOrUrl = parseYamlScalar(trimmed) || '';
-    else if (trimmed.startsWith('sha512:')) sha512 = parseYamlScalar(trimmed) || '';
-    else if (trimmed.startsWith('size:')) {
-      const parsed = Number(parseYamlScalar(trimmed) || 0);
-      if (Number.isFinite(parsed) && parsed > 0) sizeBytes = parsed;
-    } else if (trimmed.startsWith('releaseDate:')) {
-      releaseDate = parseYamlScalar(trimmed) || null;
-    }
-  }
-  if (!version) throw new Error('更新源缺少版本号');
-  const downloadUrl = pathOrUrl ? new URL(pathOrUrl, computeFeedBaseUrl()).toString() : null;
-  const fileName = downloadUrl ? decodeURIComponent(path.basename(new URL(downloadUrl).pathname || '')) : null;
-  return { version, downloadUrl, fileName, sizeBytes, sha512: sha512 || null, releaseDate };
-}
-
-function feedFileUrl(): string {
-  return new URL(UPDATE_FEED_FILE, computeFeedBaseUrl()).toString();
-}
-
-function packageExtension(fileNameOrUrl: string | null | undefined): string {
-  const value = String(fileNameOrUrl || '').split('?')[0];
-  return path.extname(value).replace(/^\./, '').toLowerCase();
-}
-
-function canUseStandardAutoUpdater(feed: StaticFeedMetadata): boolean {
-  const ext = packageExtension(feed.fileName || feed.downloadUrl);
-  if (UPDATE_PLATFORM === 'mac') return ext === 'zip';
-  if (UPDATE_PLATFORM === 'windows') return ext === 'exe';
-  return false;
-}
-
-async function fetchStaticFeedMetadata(): Promise<StaticFeedMetadata> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
-  try {
-    const response = await fetch(feedFileUrl(), {
-      headers: { Accept: 'text/yaml,text/plain,*/*' },
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`static feed check failed: ${response.status}`);
-    return parseStaticFeedYaml(await response.text());
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function checkStaticFeed(options: { broadcastResult?: boolean } = {}): Promise<{ version: string | null; officialPush?: OfficialPushUpdatePayload | null }> {
-  standardUpdateReady = false;
-  const feed = await fetchStaticFeedMetadata();
-  const comparison = compareSemverish(feed.version, app.getVersion());
-  const differs = feed.version !== app.getVersion();
-  const hasUpdate = comparison === null ? differs : comparison > 0;
-  if (!hasUpdate) {
-    lastOfficialPush = null;
-    lastOfficialPushSignature = null;
-    if (options.broadcastResult) broadcast({ kind: 'not-available', version: feed.version });
-    return { version: feed.version, officialPush: null };
-  }
-
-  if (canUseStandardAutoUpdater(feed)) {
-    standardUpdateReady = true;
-    lastOfficialPush = null;
-    lastOfficialPushSignature = null;
-    if (options.broadcastResult) broadcast({ kind: 'available', version: feed.version });
-    return { version: feed.version, officialPush: null };
-  }
-
-  const officialPush = buildStaticReleasePush(feed);
-  lastOfficialPush = officialPush;
-  lastOfficialPushSignature = officialPushSignature(officialPush);
-  if (options.broadcastResult) {
-    broadcast({ kind: 'official-push-available', version: officialPush.version, officialPush });
-  }
-  return { version: feed.version, officialPush };
 }
 
 async function writeChunk(stream: fs.WriteStream, chunk: Buffer): Promise<void> {
@@ -411,6 +285,7 @@ async function downloadOfficialPushPackage(push: OfficialPushUpdatePayload): Pro
     throw new Error('推送安装包下载完成，但 SHA512 校验未通过，请发布负责人重新上传安装包。');
   }
 
+  fs.rmSync(targetPath, { force: true });
   fs.renameSync(tempPath, targetPath);
   appendUpdaterLog(`official-push-download-ready version=${push.version} file=${fileName} bytes=${transferred}`);
   broadcast({ kind: 'downloaded', version: push.version });
@@ -429,8 +304,8 @@ function officialPushSignature(push: OfficialPushUpdatePayload | null): string |
   ].join('|');
 }
 
-async function checkOfficialPush(options: { broadcastResult?: boolean } = {}): Promise<OfficialPushUpdatePayload | null> {
-  if (!currentOrgCode || !currentFeedBaseUrl) {
+async function checkOfficialPush(options: { broadcastResult?: boolean; throwOnError?: boolean } = {}): Promise<OfficialPushUpdatePayload | null> {
+  if (!currentFeedBaseUrl) {
     lastOfficialPush = null;
     lastOfficialPushSignature = null;
     if (options.broadcastResult) broadcast({ kind: 'official-push-not-available', officialPush: null });
@@ -470,30 +345,29 @@ async function checkOfficialPush(options: { broadcastResult?: boolean } = {}): P
     if (options.broadcastResult) {
       broadcast({ kind: 'error', message: normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err)) });
     }
+    if (options.throwOnError) throw err;
     return null;
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
 
-function stopOfficialPushPolling(): void {
-  if (!officialPushTimer) return;
-  clearInterval(officialPushTimer);
-  officialPushTimer = null;
+async function runAutomaticUpdateCheck(): Promise<void> {
+  if (!automaticUpdateCheckDue()) return;
+  if (automaticCheckInFlight) return automaticCheckInFlight;
+  const task = (async () => {
+    await checkOfficialPush({ broadcastResult: false, throwOnError: true });
+    markSuccessfulUpdateCheck();
+  })();
+  automaticCheckInFlight = task;
+  try {
+    await task;
+  } finally {
+    if (automaticCheckInFlight === task) automaticCheckInFlight = null;
+  }
 }
 
-function startOfficialPushPolling(): void {
-  if (!setupDone || officialPushTimer || !currentOrgCode || !currentFeedBaseUrl) return;
-  officialPushTimer = setInterval(() => {
-    void checkOfficialPush({ broadcastResult: false });
-  }, ORG_PUSH_RECHECK_INTERVAL_MS);
-  officialPushTimer.unref?.();
-}
-
-/**
- * 由 renderer 在拿到 /me/org-membership 后调用,把组织身份登记到官网中央发布服务。
- * 切到 org 感知 feed 后立即重检一次,让定向推送即时生效(不必等 6h 周期)。
- */
+/** renderer 拿到组织身份后切换到官网对应的定向版查询入口。 */
 export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): Promise<void> {
   const nextIdentity = {
     organizationId: (identity?.organizationId || '').trim(),
@@ -503,18 +377,15 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
     platform: UPDATE_PLATFORM || 'mac',
   };
   const nextIdentityKey = JSON.stringify(nextIdentity);
-  if (nextIdentityKey === currentIdentityKey && currentOrgCode && currentFeedBaseUrl) return;
+  if (nextIdentityKey === currentIdentityKey && currentFeedBaseUrl) return;
   currentIdentityKey = nextIdentityKey;
 
   const hasOrgIdentity = Boolean(nextIdentity.organizationId || nextIdentity.organizationSlug);
   if (!hasOrgIdentity) {
     currentOrgCode = null;
-    currentFeedBaseUrl = null;
+    currentFeedBaseUrl = UPDATE_FEED_BASE_URL;
     lastOfficialPush = null;
     lastOfficialPushSignature = null;
-    standardUpdateReady = false;
-    autoUpdater.allowDowngrade = false;
-    stopOfficialPushPolling();
   } else {
     let timer: NodeJS.Timeout | null = null;
     try {
@@ -532,29 +403,23 @@ export async function setUpdateOrgIdentity(identity: UpdateOrgIdentity | null): 
       currentFeedBaseUrl = (payload.updateFeedBaseUrl || '').trim() || (
         currentOrgCode
           ? `${RELEASE_SERVICE_BASE_URL}/api/v1/updates/${encodeURIComponent(currentOrgCode)}/${UPDATE_PLATFORM || 'mac'}/`
-          : null
+          : UPDATE_FEED_BASE_URL
       );
       appendUpdaterLog(currentOrgCode ? `release-org-resolved org=${currentOrgCode}` : 'release-org-resolved empty');
     } catch (err) {
-      console.warn('[autoUpdater] central release org resolve failed, fallback to static TOS:', err);
+      console.warn('[autoUpdater] central release org resolve failed, fallback to public website feed:', err);
       appendUpdaterLog(`release-org-resolve-failed ${err instanceof Error ? err.message : String(err)}`);
       currentOrgCode = null;
-      currentFeedBaseUrl = null;
+      currentFeedBaseUrl = UPDATE_FEED_BASE_URL;
       lastOfficialPushSignature = null;
-      stopOfficialPushPolling();
     } finally {
       if (timer) clearTimeout(timer);
     }
   }
 
   if (!shouldEnable()) return;
-  applyFeedUrl();
-  console.log('[autoUpdater] feed switched:', currentOrgCode ? `central-org-aware(${currentOrgCode})` : 'static TOS');
-  appendUpdaterLog(`feed-switched ${currentOrgCode ? `central-org-aware(${currentOrgCode})` : 'static TOS'}`);
-  if (currentOrgCode && currentFeedBaseUrl) {
-    startOfficialPushPolling();
-    await checkOfficialPush({ broadcastResult: true });
-  }
+  console.log('[autoUpdater] feed switched:', currentOrgCode ? `website-org-aware(${currentOrgCode})` : 'website-public');
+  appendUpdaterLog(`feed-switched ${currentOrgCode ? `website-org-aware(${currentOrgCode})` : 'website-public'}`);
 }
 
 export function setUpdateOrgCode(orgCode: string | null, cloudBaseUrl: string | null): Promise<void> {
@@ -588,10 +453,10 @@ function shouldEnable(): boolean {
 function normalizeUpdateErrorMessage(message: string): string {
   const lower = message.toLowerCase();
   if (message.includes('app-update.yml') && (lower.includes('enoent') || lower.includes('no such file'))) {
-    return `当前安装包缺少更新配置文件，已改为使用益语官方火山云更新源。请稍后重试；若仍失败，请确认 ${UPDATE_FEED_URL} 已发布。`;
+    return '当前安装包缺少更新配置文件，请通过益语智库官网下载最新版。';
   }
-  if ((message.includes('latest-mac.yml') || message.includes('latest.yml')) && (message.includes('404') || lower.includes('not found'))) {
-    return `当前更新源尚未发布可用版本或暂不可访问。请确认 ${UPDATE_FEED_URL} 已发布。`;
+  if (message.includes('official push check failed: 404') || lower.includes('not found')) {
+    return '益语智库官网尚未发布适用于当前系统的版本，请稍后重试。';
   }
   if (lower.includes('net::err_internet_disconnected') || lower.includes('enotfound') || lower.includes('econnreset') || lower.includes('timeout')) {
     return '当前网络无法连接更新源，请稍后重试。';
@@ -602,6 +467,22 @@ function normalizeUpdateErrorMessage(message: string): string {
   return message;
 }
 
+async function fetchCurrentReleaseMetadata(): Promise<ReleaseVersionMetadata | null> {
+  if (!UPDATE_PLATFORM) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const url = new URL('/api/v1/releases/metadata', RELEASE_SERVICE_BASE_URL);
+    url.searchParams.set('version', app.getVersion());
+    url.searchParams.set('platform', UPDATE_PLATFORM);
+    const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: controller.signal });
+    if (!response.ok) throw new Error(`release metadata failed: ${response.status}`);
+    return await response.json() as ReleaseVersionMetadata | null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function setupAutoUpdater(mainWindow: BrowserWindow): void {
   mainWindowRef = mainWindow;
 
@@ -610,58 +491,10 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
 
   if (!shouldEnable()) return;
 
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.allowDowngrade = false;
-  applyFeedUrl();
-  autoUpdater.logger = {
-    info: (msg: unknown) => console.log('[autoUpdater]', msg),
-    warn: (msg: unknown) => console.warn('[autoUpdater]', msg),
-    error: (msg: unknown) => console.error('[autoUpdater]', msg),
-    debug: () => undefined,
-  } as never;
-
+  loadUpdateCheckState();
   mainWindow.on('focus', () => {
-    if (!currentOrgCode || !currentFeedBaseUrl) return;
-    void checkOfficialPush({ broadcastResult: false });
-  });
-
-  autoUpdater.on('checking-for-update', () => {
-    broadcast({ kind: 'checking' });
-  });
-
-  autoUpdater.on('update-available', (info) => {
-    broadcast({
-      kind: 'available',
-      version: info?.version,
-      releaseNotes: typeof info?.releaseNotes === 'string' ? info.releaseNotes : null,
-    });
-  });
-
-  autoUpdater.on('update-not-available', (info) => {
-    broadcast({ kind: 'not-available', version: info?.version });
-  });
-
-  autoUpdater.on('download-progress', (progress) => {
-    broadcast({
-      kind: 'download-progress',
-      percent: progress?.percent,
-      bytesPerSecond: progress?.bytesPerSecond,
-      transferred: progress?.transferred,
-      total: progress?.total,
-    });
-  });
-
-  autoUpdater.on('update-downloaded', (info) => {
-    broadcast({ kind: 'downloaded', version: info?.version });
-  });
-
-  autoUpdater.on('error', (err) => {
-    const message = normalizeUpdateErrorMessage(err?.message ?? String(err ?? 'unknown updater error'));
-    broadcast({
-      kind: 'error',
-      message,
-    });
+    if (!automaticUpdateCheckDue()) return;
+    void runAutomaticUpdateCheck().catch((err) => console.warn('[autoUpdater] focus check failed:', err));
   });
 
   ipcMain.handle('yiyu-workbench:update.check', async () => {
@@ -670,12 +503,9 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
     }
     try {
       broadcast({ kind: 'checking' });
-      if (currentOrgCode && currentFeedBaseUrl) {
-        const officialPush = await checkOfficialPush({ broadcastResult: true });
-        return { ok: true, version: officialPush?.version ?? null, officialPush };
-      }
-      const result = await checkStaticFeed({ broadcastResult: true });
-      return { ok: true, version: result.version, officialPush: result.officialPush ?? null };
+      const officialPush = await checkOfficialPush({ broadcastResult: true, throwOnError: true });
+      markSuccessfulUpdateCheck();
+      return { ok: true, version: officialPush?.version ?? app.getVersion(), officialPush };
     } catch (err) {
       const message = normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err));
       console.error('[autoUpdater] checkForUpdates failed:', message);
@@ -683,22 +513,12 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('yiyu-workbench:update.downloadStandard', async () => {
-    if (!shouldEnable()) {
-      return { ok: false, reason: 'updater disabled in this environment' };
-    }
-    if (!standardUpdateReady) {
-      return { ok: false, reason: '当前没有可自动更新的标准安装包，请先检查更新。' };
-    }
+  ipcMain.handle('yiyu-workbench:update.currentReleaseMetadata', async () => {
     try {
-      broadcast({ kind: 'checking' });
-      await autoUpdater.checkForUpdates();
-      await autoUpdater.downloadUpdate();
-      return { ok: true };
+      return await fetchCurrentReleaseMetadata();
     } catch (err) {
-      const message = normalizeUpdateErrorMessage(err instanceof Error ? err.message : String(err));
-      console.error('[autoUpdater] downloadStandard failed:', message);
-      return { ok: false, reason: message };
+      appendUpdaterLog(`release-metadata-failed ${err instanceof Error ? err.message : String(err)}`);
+      return null;
     }
   });
 
@@ -707,9 +527,7 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
       return { ok: false, reason: 'updater disabled in this environment' };
     }
     try {
-      const officialPush = currentOrgCode && currentFeedBaseUrl
-        ? await checkOfficialPush({ broadcastResult: true }) || lastOfficialPush
-        : lastOfficialPush;
+      const officialPush = await checkOfficialPush({ broadcastResult: true, throwOnError: true }) || lastOfficialPush;
       if (!officialPush) {
         return { ok: false, reason: '当前没有可安装的官方版本，请先检查更新。' };
       }
@@ -733,37 +551,18 @@ export function setupAutoUpdater(mainWindow: BrowserWindow): void {
     }
   });
 
-  ipcMain.handle('yiyu-workbench:update.quitAndInstall', async () => {
-    try {
-      autoUpdater.quitAndInstall(false, true);
-      return { ok: true };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, reason: message };
-    }
-  });
-
   setTimeout(() => {
-    if (currentOrgCode && currentFeedBaseUrl) {
-      checkOfficialPush().catch((err) => console.warn('[autoUpdater] initial official push check failed:', err));
-      return;
-    }
-    checkStaticFeed().catch((err) => console.warn('[autoUpdater] initial static feed check failed:', err));
+    void runAutomaticUpdateCheck().catch((err) => console.warn('[autoUpdater] initial website check failed:', err));
   }, CHECK_DELAY_MS);
 
   recheckTimer = setInterval(() => {
-    if (currentOrgCode && currentFeedBaseUrl) {
-      checkOfficialPush().catch((err) => console.warn('[autoUpdater] periodic official push check failed:', err));
-      return;
-    }
-    checkStaticFeed().catch((err) => console.warn('[autoUpdater] periodic static feed check failed:', err));
-  }, RECHECK_INTERVAL_MS);
+    void runAutomaticUpdateCheck().catch((err) => console.warn('[autoUpdater] periodic website check failed:', err));
+  }, RECHECK_TIMER_INTERVAL_MS);
 
   app.on('before-quit', () => {
     if (recheckTimer) {
       clearInterval(recheckTimer);
       recheckTimer = null;
     }
-    stopOfficialPushPolling();
   });
 }

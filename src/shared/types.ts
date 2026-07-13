@@ -4906,6 +4906,7 @@ export interface UpdateOrgIdentity {
 
 export interface OfficialPushUpdatePayload {
   title: string;
+  releaseId?: string | null;
   version: string;
   releaseVersion?: string | null;
   currentVersion: string;
@@ -4916,8 +4917,19 @@ export interface OfficialPushUpdatePayload {
   sizeBytes?: number | null;
   sha512?: string | null;
   downloadUrl?: string | null;
+  publishedAt?: string | null;
+  userNotes?: Record<string, string[]>;
   organizationCode?: string | null;
   relation: 'upgrade' | 'downgrade' | 'switch-custom' | 'different' | 'unknown';
+}
+
+export interface ReleaseVersionMetadata {
+  requestedVersion: string;
+  matchedVersion: string;
+  exact: boolean;
+  releaseId?: string | null;
+  publishedAt?: string | null;
+  userNotes?: Record<string, string[]>;
 }
 
 export interface OrgFeishuIntegrationAuditRecord {
@@ -8207,9 +8219,8 @@ declare global {
         tasks: { kind: string; label: string; status?: string; severity?: 'loss' | 'queued' }[];
       }): Promise<{ ok: boolean; count: number }>;
       checkForUpdates?(): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }>;
-      downloadStandardUpdate?(): Promise<{ ok: boolean; reason?: string }>;
+      getCurrentReleaseMetadata?(): Promise<ReleaseVersionMetadata | null>;
       installOfficialPushUpdate?(): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }>;
-      quitAndInstallUpdate?(): Promise<{ ok: boolean; reason?: string }>;
       onUpdateEvent?(callback: (payload: UpdateEventPayload) => void): () => void;
     };
   }

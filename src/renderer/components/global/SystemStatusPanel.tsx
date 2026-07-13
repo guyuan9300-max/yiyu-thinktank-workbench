@@ -30,6 +30,7 @@ export type SystemStatusPanelProps = {
   aiSyncing: boolean;
   backendOnline: boolean;
   collapsed: boolean;
+  canSyncOrganizationAi: boolean;
   onSelectSection: (sectionKey: 'data_center' | 'ai') => void;
   onRetryAi: () => void;
 };
@@ -54,6 +55,7 @@ export function SystemStatusPanel({
   aiSyncing,
   backendOnline,
   collapsed,
+  canSyncOrganizationAi,
   onSelectSection,
   onRetryAi,
 }: SystemStatusPanelProps) {
@@ -94,7 +96,7 @@ export function SystemStatusPanel({
       modelRow = {
         key: 'ai',
         label: '大模型',
-        value: `${shortName} · 本机直连`,
+        value: shortName,
         tone: 'online',
         tooltip: `${aiRuntimeStatus.providerLabel || aiRuntimeStatus.provider}${
           aiRuntimeStatus.model ? ` · ${aiRuntimeStatus.model}` : ''
@@ -104,7 +106,7 @@ export function SystemStatusPanel({
       modelRow = {
         key: 'ai',
         label: '大模型',
-        value: '未就绪 · 重新同步',
+        value: '未就绪',
         tone: 'warn',
         tooltip: aiRuntimeStatus.lastError || '当前设备尚未同步组织 AI 配置，点击重新同步',
       };
@@ -154,10 +156,6 @@ export function SystemStatusPanel({
   }, [aiRuntimeStatus, aiSyncing, backendOnline, health]);
 
   const handleRowClick = (row: SystemStatusRow) => {
-    if (row.key === 'ai' && !aiSyncing && (aiRuntimeStatus?.state === 'not_ready' || aiRuntimeStatus?.state === 'error')) {
-      onRetryAi();
-      return;
-    }
     onSelectSection(row.key as 'data_center' | 'ai');
   };
 
@@ -188,23 +186,35 @@ export function SystemStatusPanel({
       <p className="px-3 text-[9px] font-bold uppercase tracking-[0.18em] text-gray-400 mb-1">
         SYSTEM · 系统状态
       </p>
-      {rows.map((row) => (
-        <button
-          key={row.key}
-          type="button"
-          onClick={() => handleRowClick(row)}
-          title={row.tooltip || `${row.label}：${row.value}`}
-          className="group w-full flex items-center gap-2 rounded-md px-3 py-1.5 hover:bg-gray-50/70 transition-colors"
-        >
-          <span className={`inline-block h-[7px] w-[7px] rounded-full shrink-0 ${TONE_DOT_CLASS[row.tone]}`} />
-          <span className="text-[11.5px] font-medium text-gray-600 group-hover:text-gray-800 transition-colors">
-            {row.label}
-          </span>
-          <span className={`ml-auto truncate text-[10.5px] ${TONE_VALUE_CLASS[row.tone]} max-w-[110px]`}>
-            {row.value}
-          </span>
-        </button>
-      ))}
+      {rows.map((row) => {
+        const showSync = row.key === 'ai'
+          && canSyncOrganizationAi
+          && !aiSyncing
+          && (aiRuntimeStatus?.state === 'not_ready' || aiRuntimeStatus?.state === 'error');
+        return (
+          <div key={row.key} className="group flex w-full items-center gap-1 rounded-md hover:bg-gray-50/70 transition-colors">
+            <button
+              type="button"
+              onClick={() => handleRowClick(row)}
+              title={row.tooltip || `${row.label}：${row.value}`}
+              className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1.5 text-left"
+            >
+              <span className={`inline-block h-[7px] w-[7px] rounded-full shrink-0 ${TONE_DOT_CLASS[row.tone]}`} />
+              <span className="text-[11.5px] font-medium text-gray-600 group-hover:text-gray-800 transition-colors">{row.label}</span>
+              <span className={`ml-auto truncate text-[10.5px] ${TONE_VALUE_CLASS[row.tone]} max-w-[92px]`}>{row.value}</span>
+            </button>
+            {showSync && (
+              <button
+                type="button"
+                onClick={onRetryAi}
+                className="mr-2 rounded border border-amber-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-50"
+              >
+                同步
+              </button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

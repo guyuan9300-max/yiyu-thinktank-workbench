@@ -10,6 +10,7 @@ import type {
   PublishCollabBranchPayload,
   PushMainPayload,
   PushPreview,
+  ReleaseVersionMetadata,
   StartCollabPreviewPayload,
   StopCollabPreviewPayload,
   UpdateOrgIdentity,
@@ -112,12 +113,10 @@ contextBridge.exposeInMainWorld('yiyuWorkbench', {
   },
   checkForUpdates: (): Promise<{ ok: boolean; version?: string | null; reason?: string; officialPush?: OfficialPushUpdatePayload | null }> =>
     ipcRenderer.invoke('yiyu-workbench:update.check'),
-  downloadStandardUpdate: (): Promise<{ ok: boolean; reason?: string }> =>
-    ipcRenderer.invoke('yiyu-workbench:update.downloadStandard'),
+  getCurrentReleaseMetadata: (): Promise<ReleaseVersionMetadata | null> =>
+    ipcRenderer.invoke('yiyu-workbench:update.currentReleaseMetadata'),
   installOfficialPushUpdate: (): Promise<{ ok: boolean; version?: string | null; reason?: string; fileName?: string | null }> =>
     ipcRenderer.invoke('yiyu-workbench:update.installOfficialPush'),
-  quitAndInstallUpdate: (): Promise<{ ok: boolean; reason?: string }> =>
-    ipcRenderer.invoke('yiyu-workbench:update.quitAndInstall'),
   onUpdateEvent: (callback: (payload: UpdateEventPayload) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: UpdateEventPayload) => callback(payload);
     ipcRenderer.on('yiyu-workbench:update-event', handler);

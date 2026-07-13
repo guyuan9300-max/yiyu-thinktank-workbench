@@ -31094,7 +31094,7 @@ export default function App() {
                   : '未接入',
                 accent: textModelReady ? 'success' : 'warning',
                 helper: organizationDirectReady
-                  ? '组织配置已同步，本机直连'
+                  ? '组织配置已同步'
                   : (textModelReady ? (draft.aiModel || '默认模型') : '问答 / 报告 / 洞察都依赖它'),
               })}
               {renderStatusBlock({
@@ -31247,7 +31247,7 @@ export default function App() {
                           {orgAiRuntimeSyncing || orgAiRuntimeStatus?.state === 'syncing'
                             ? '正在同步组织 AI 配置…'
                             : organizationDirectReady
-                              ? `${orgAiRuntimeStatus?.providerLabel || orgAiRuntimeStatus?.model || '组织 AI'} · 本机直连`
+                              ? `${orgAiRuntimeStatus?.providerLabel || orgAiRuntimeStatus?.model || '组织 AI'}`
                               : `组织 AI 未就绪${orgAiRuntimeStatus?.lastError ? `：${orgAiRuntimeStatus.lastError}` : ''}`}
                         </span>
                         {!organizationDirectReady && (
@@ -32661,9 +32661,6 @@ export default function App() {
     return <IdentityGate />;
   }
 
-  const sidebarAiStatusLabel = isRealAiConfigured(health?.ai)
-    ? aiModelDisplayLabel(health?.ai.provider, health?.ai.model, health?.ai.providerLabel)
-    : '未配置大模型';
   const sidebarVisibleClientCount = clients.length;
   const sidebarSessionAccountName = getSessionDisplayIdentity(currentSessionUser);
   const hasActiveOrganizationWorkspace = activeWorkspaceRecord?.kind === 'organization';
@@ -32685,10 +32682,10 @@ export default function App() {
       : '本机草稿';
   const sidebarConnectionLabel = hasSidebarSessionIdentity
     ? (isLocalSession
-      ? `未连接组织 · ${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`
-      : `${sidebarAiStatusLabel} · ${sidebarVisibleClientCount} 客户`)
+      ? `未连接组织 · ${sidebarVisibleClientCount} 客户`
+      : `${sidebarVisibleClientCount} 客户`)
     : hasActiveOrganizationWorkspace
-      ? `${activeWorkspaceRecord?.requiresLogin ? '需重新登录该组织' : '正在恢复登录信息'} · ${sidebarAiStatusLabel}`
+      ? (activeWorkspaceRecord?.requiresLogin ? '需重新登录该组织' : '正在恢复登录信息')
       : `未连接组织 · ${sidebarVisibleClientCount} 客户`;
 
   // 迷你面板早退渲染:在所有 hooks 之后(本 return 处),只决定渲染哪棵树,不跳过任何 hook。
@@ -32954,6 +32951,7 @@ export default function App() {
             health={health}
             aiRuntimeStatus={orgAiRuntimeStatus}
             aiSyncing={orgAiRuntimeSyncing}
+            canSyncOrganizationAi={Boolean(hasActiveOrganizationWorkspace && hasAuthenticatedSession && isCloudSession)}
             backendOnline={!backendCompatibilityError && Boolean(health)}
             collapsed={isSidebarCollapsed}
             onRetryAi={() => void handleSyncOrgAiRuntime()}
