@@ -578,6 +578,19 @@ def test_migration_guard_blocks_newer_database_without_backup(tmp_path: Path) ->
     assert not list(guard_module._backup_dir(tmp_path).glob("app-pre-migrate-*.db"))
 
 
+def test_directory_fsync_is_skipped_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(guard_module.os, "name", "nt")
+
+    def unexpected_open(*_args, **_kwargs):
+        raise AssertionError("Windows must not open directories for os.fsync")
+
+    monkeypatch.setattr(guard_module.os, "open", unexpected_open)
+    guard_module._fsync_directory(tmp_path)
+
+
 @pytest.mark.integration
 def test_post_migration_quick_check_failure_restores_verified_backup(
     tmp_path: Path,

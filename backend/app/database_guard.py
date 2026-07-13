@@ -213,6 +213,11 @@ def _fsync_file(path: Path) -> None:
 
 
 def _fsync_directory(path: Path) -> None:
+    # Windows does not expose directory handles through os.open() with the
+    # semantics required by os.fsync().  The database file and every backup
+    # file are still fsynced individually before the atomic replace.
+    if os.name == "nt":
+        return
     try:
         directory_fd = os.open(path, os.O_RDONLY)
     except OSError:
