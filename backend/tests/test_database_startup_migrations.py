@@ -407,6 +407,7 @@ def test_create_app_uses_shared_database_migration_guard(
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not enforceable on Windows")
 def test_migration_backup_artifacts_stay_private_with_permissive_umask(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
@@ -429,6 +430,7 @@ def test_migration_backup_artifacts_stay_private_with_permissive_umask(tmp_path:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not enforceable on Windows")
 def test_rollback_quarantine_artifacts_stay_private_with_permissive_umask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -478,6 +480,7 @@ def test_rollback_quarantine_artifacts_stay_private_with_permissive_umask(
 
 
 @pytest.mark.integration
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not enforceable on Windows")
 def test_guarded_database_file_stays_private_with_permissive_umask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -589,6 +592,26 @@ def test_directory_fsync_is_skipped_on_windows(
 
     monkeypatch.setattr(guard_module.os, "open", unexpected_open)
     guard_module._fsync_directory(tmp_path)
+
+
+def test_file_fsync_uses_writable_handle_on_windows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "flush-probe"
+    file_path.write_bytes(b"ready")
+    observed_modes: list[str] = []
+    real_open = Path.open
+
+    def tracking_open(path: Path, mode: str = "r", *args, **kwargs):
+        observed_modes.append(mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(guard_module.os, "name", "nt")
+    monkeypatch.setattr(Path, "open", tracking_open)
+    guard_module._fsync_file(file_path)
+
+    assert observed_modes == ["r+b"]
 
 
 @pytest.mark.integration

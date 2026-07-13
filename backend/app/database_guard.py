@@ -208,7 +208,11 @@ def inspect_database_migration_state(
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as file_obj:
+    # Windows' _commit() rejects descriptors opened read-only.  The file is
+    # already complete here, so open it without truncation but with write
+    # access before asking the OS to flush it.
+    mode = "r+b" if os.name == "nt" else "rb"
+    with path.open(mode) as file_obj:
         os.fsync(file_obj.fileno())
 
 
