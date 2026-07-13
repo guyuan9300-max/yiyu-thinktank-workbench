@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -411,7 +412,7 @@ def test_create_app_uses_shared_database_migration_guard(
 def test_migration_backup_artifacts_stay_private_with_permissive_umask(tmp_path: Path) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("PRAGMA user_version=0")
 
     previous_umask = os.umask(0o022)
@@ -537,14 +538,14 @@ def test_migration_guard_restores_backup_after_constructor_failure(
 ) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE migration_guard_probe(value TEXT NOT NULL)")
         conn.execute("INSERT INTO migration_guard_probe(value) VALUES('before')")
         conn.execute("PRAGMA user_version=0")
 
     class FailingDatabase:
         def __init__(self, path: Path) -> None:
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 conn.execute("DELETE FROM migration_guard_probe")
                 conn.execute("CREATE TABLE partial_migration(value TEXT)")
             raise RuntimeError("injected constructor failure")
@@ -554,7 +555,7 @@ def test_migration_guard_restores_backup_after_constructor_failure(
     with pytest.raises(RuntimeError, match="injected constructor failure"):
         guard_module.open_database_with_migration_guard(db_path, data_dir=tmp_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         assert conn.execute("SELECT value FROM migration_guard_probe").fetchone() == ("before",)
         assert conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='partial_migration'"
@@ -569,13 +570,13 @@ def test_migration_guard_blocks_newer_database_without_backup(tmp_path: Path) ->
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
     future_version = db_module.BACKEND_SCHEMA_VERSION + 1
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute(f"PRAGMA user_version={future_version}")
 
     with pytest.raises(guard_module.DatabaseDowngradeBlockedError):
         guard_module.open_database_with_migration_guard(db_path, data_dir=tmp_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         assert conn.execute("PRAGMA user_version").fetchone() == (future_version,)
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
     assert not list(guard_module._backup_dir(tmp_path).glob("app-pre-migrate-*.db"))
@@ -621,7 +622,7 @@ def test_post_migration_quick_check_failure_restores_verified_backup(
 ) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE live_check_probe(value TEXT NOT NULL)")
         conn.execute("INSERT INTO live_check_probe(value) VALUES('before')")
         conn.execute("PRAGMA user_version=0")
@@ -641,7 +642,7 @@ def test_post_migration_quick_check_failure_restores_verified_backup(
     with pytest.raises(guard_module.DatabaseMigrationGuardError, match="injected live quick_check failure"):
         guard_module.open_database_with_migration_guard(db_path, data_dir=tmp_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         assert conn.execute("SELECT value FROM live_check_probe").fetchone() == ("before",)
         assert conn.execute("PRAGMA user_version").fetchone() == (0,)
         assert conn.execute("PRAGMA quick_check").fetchone() == ("ok",)
@@ -654,7 +655,7 @@ def test_interrupted_migration_does_not_accept_live_db_when_quick_check_fails(
 ) -> None:
     db_path = tmp_path / "app.db"
     _create_current_database(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("CREATE TABLE interrupted_probe(value TEXT NOT NULL)")
         conn.execute("INSERT INTO interrupted_probe(value) VALUES('backup')")
     inspection = guard_module.inspect_database_migration_state(db_path)
@@ -677,7 +678,7 @@ def test_interrupted_migration_does_not_accept_live_db_when_quick_check_fails(
         source_schema_version=inspection.schema_version,
         target_schema_version=db_module.BACKEND_SCHEMA_VERSION,
     )
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.execute("UPDATE interrupted_probe SET value='damaged-live'")
 
     real_validate = guard_module._validate_sqlite_snapshot
@@ -693,7 +694,7 @@ def test_interrupted_migration_does_not_accept_live_db_when_quick_check_fails(
 
     monkeypatch.setattr(guard_module, "_validate_sqlite_snapshot", fail_first_live_check)
     guard_module._recover_interrupted_migration(tmp_path, db_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         assert conn.execute("SELECT value FROM interrupted_probe").fetchone() == ("backup",)
     assert not marker_path.exists()
 
