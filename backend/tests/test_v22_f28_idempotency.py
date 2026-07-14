@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,14 @@ from app.services.idempotency_store import (  # noqa: E402
     _hash_body,
     get_idempotency_store,
 )
+
+
+SCOPE_A = {
+    "sandbox_id": "sbx_a",
+    "organization_id": "org_a",
+    "actor_type": "human",
+    "actor_id": "user_a",
+}
 
 
 @pytest.fixture
@@ -67,7 +76,7 @@ def test_idempotency_keys_columns_complete(db: Database):
         "id", "idempotency_key", "request_method", "request_path",
         "request_body_hash",
         "response_status", "response_body",
-        "actor_type", "actor_id",
+        "sandbox_id", "organization_id", "actor_type", "actor_id", "claim_token",
         "created_at", "expires_at", "status",
     }
     missing = required - col_names
@@ -126,6 +135,94 @@ def test_idempotency_same_key_diff_path_allowed(db: Database):
     assert len(rows) == 2
 
 
+def test_same_key_is_independent_across_sandbox_org_and_actor(
+    store: IdempotencyStore,
+) -> None:
+    payload = {"title": "same request"}
+    scopes = (
+        SCOPE_A,
+        {**SCOPE_A, "sandbox_id": "sbx_b", "organization_id": "org_b"},
+        {**SCOPE_A, "actor_id": "user_b"},
+        {**SCOPE_A, "actor_type": "ai_agent"},
+    )
+
+    for index, scope in enumerate(scopes):
+        assert store.find("shared-key", "POST", "/api/v1/tasks", payload, **scope) is None
+        claim_token = store.start("shared-key", "POST", "/api/v1/tasks", payload, **scope)
+        store.complete(
+            "shared-key",
+            "POST",
+            "/api/v1/tasks",
+            status=200,
+            response_body={"id": f"task_{index}"},
+            claim_token=claim_token,
+            **scope,
+        )
+
+    replayed = [
+        json.loads(
+            store.find("shared-key", "POST", "/api/v1/tasks", payload, **scope).response_body
+        )["id"]
+        for scope in scopes
+    ]
+    assert replayed == ["task_0", "task_1", "task_2", "task_3"]
+
+
+def test_old_unscoped_schema_is_migrated_without_replaying_old_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE idempotency_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idempotency_key TEXT NOT NULL,
+            request_method TEXT NOT NULL,
+            request_path TEXT NOT NULL,
+            request_body_hash TEXT NOT NULL DEFAULT '',
+            response_status INTEGER NOT NULL,
+            response_body TEXT NOT NULL DEFAULT '',
+            actor_type TEXT NOT NULL DEFAULT 'human',
+            actor_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'completed'
+        );
+        CREATE UNIQUE INDEX idx_idempotency_keys_lookup
+            ON idempotency_keys(idempotency_key, request_method, request_path);
+        """
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    later = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    conn.execute(
+        """
+        INSERT INTO idempotency_keys(
+            idempotency_key, request_method, request_path, request_body_hash,
+            response_status, response_body, actor_type, actor_id,
+            created_at, expires_at, status
+        ) VALUES (?, 'POST', '/api/v1/tasks', '', 200, '{"id":"legacy"}',
+                  'human', 'user_a', ?, ?, 'completed')
+        """,
+        ("legacy-key", now, later),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = Database(db_path)
+    columns = {str(row["name"]) for row in migrated.fetchall("PRAGMA table_info(idempotency_keys)")}
+    assert {"sandbox_id", "organization_id"}.issubset(columns)
+    store = IdempotencyStore(migrated)
+    assert store.find("legacy-key", "POST", "/api/v1/tasks", **SCOPE_A) is None
+    store.start("legacy-key", "POST", "/api/v1/tasks", **SCOPE_A)
+    scoped_rows = migrated.fetchall(
+        "SELECT sandbox_id, organization_id, actor_id FROM idempotency_keys "
+        "WHERE idempotency_key = 'legacy-key' ORDER BY id"
+    )
+    assert [tuple(row) for row in scoped_rows] == [
+        ("", "", "user_a"),
+        ("sbx_a", "org_a", "user_a"),
+    ]
+
+
 # ════════════════════════════════════════════════════════════════
 # IdempotencyStore 基本流程
 # ════════════════════════════════════════════════════════════════
@@ -133,13 +230,13 @@ def test_idempotency_same_key_diff_path_allowed(db: Database):
 
 def test_find_returns_none_for_new_key(store: IdempotencyStore):
     """首次请求 → 不命中"""
-    result = store.find("never_seen_key", "POST", "/api/v1/tasks")
+    result = store.find("never_seen_key", "POST", "/api/v1/tasks", **SCOPE_A)
     assert result is None
 
 
 def test_empty_key_returns_none(store: IdempotencyStore):
     """空 key (客户端没传 header) → 不查"""
-    result = store.find("", "POST", "/api/v1/tasks")
+    result = store.find("", "POST", "/api/v1/tasks", **SCOPE_A)
     assert result is None
 
 
@@ -148,27 +245,32 @@ def test_full_lifecycle_start_then_complete(store: IdempotencyStore, db: Databas
     payload = {"title": "拟合同", "owner": "顾源源"}
 
     # 1. 首次 find 不命中
-    assert store.find("k_001", "POST", "/api/v1/tasks", payload) is None
+    assert store.find("k_001", "POST", "/api/v1/tasks", payload, **SCOPE_A) is None
 
     # 2. start: 标记开始处理
-    store.start("k_001", "POST", "/api/v1/tasks", payload,
-                actor_type="human", actor_id="user_guyuanyuan")
+    claim_token = store.start(
+        "k_001", "POST", "/api/v1/tasks", payload, **SCOPE_A
+    )
     db.conn.commit()
 
     # 3. find 命中, status=in_progress
-    cached = store.find("k_001", "POST", "/api/v1/tasks", payload)
+    cached = store.find("k_001", "POST", "/api/v1/tasks", payload, **SCOPE_A)
     assert cached is not None
     assert cached.status == "in_progress"
     assert cached.actor_type == "human"
-    assert cached.actor_id == "user_guyuanyuan"
+    assert cached.actor_id == "user_a"
+    assert cached.sandbox_id == "sbx_a"
+    assert cached.organization_id == "org_a"
 
     # 4. complete: 写入结果
     store.complete("k_001", "POST", "/api/v1/tasks",
-                   status=201, response_body={"id": "task_abc", "title": "拟合同"})
+                   status=201, response_body={"id": "task_abc", "title": "拟合同"},
+                   claim_token=claim_token,
+                   **SCOPE_A)
     db.conn.commit()
 
     # 5. 再 find: status=completed + response 缓存
-    cached = store.find("k_001", "POST", "/api/v1/tasks", payload)
+    cached = store.find("k_001", "POST", "/api/v1/tasks", payload, **SCOPE_A)
     assert cached.status == "completed"
     assert cached.response_status == 201
     body = json.loads(cached.response_body)
@@ -181,12 +283,12 @@ def test_body_hash_mismatch_raises(store: IdempotencyStore, db: Database):
     防御场景: 客户端 bug / 攻击, 用同 Idempotency-Key 但改了 payload
     """
     store.start("k_002", "POST", "/api/v1/tasks",
-                {"title": "原标题"})
+                {"title": "原标题"}, **SCOPE_A)
     db.conn.commit()
     # 用不同 body 查
     with pytest.raises(IdempotencyKeyMismatchError) as exc_info:
         store.find("k_002", "POST", "/api/v1/tasks",
-                   {"title": "篡改后的标题"})
+                   {"title": "篡改后的标题"}, **SCOPE_A)
     assert "k_002" in str(exc_info.value)
     assert "different request body" in str(exc_info.value)
 
@@ -194,9 +296,9 @@ def test_body_hash_mismatch_raises(store: IdempotencyStore, db: Database):
 def test_same_body_hash_no_raise(store: IdempotencyStore, db: Database):
     """同 key + 同 body → 命中, 不抛"""
     payload = {"title": "拟合同"}
-    store.start("k_003", "POST", "/api/v1/tasks", payload)
+    store.start("k_003", "POST", "/api/v1/tasks", payload, **SCOPE_A)
     db.conn.commit()
-    cached = store.find("k_003", "POST", "/api/v1/tasks", payload)
+    cached = store.find("k_003", "POST", "/api/v1/tasks", payload, **SCOPE_A)
     assert cached is not None
 
 
@@ -221,20 +323,87 @@ def test_expired_key_returns_none(store: IdempotencyStore, db: Database):
         ("k_expired", "POST", "/api/v1/x", "h", 200, "{}", now, past, "completed"),
     )
     db.conn.commit()
-    result = store.find("k_expired", "POST", "/api/v1/x")
+    result = store.find("k_expired", "POST", "/api/v1/x", **SCOPE_A)
     assert result is None
+
+
+def test_expired_key_can_be_reused_atomically(store: IdempotencyStore, db: Database) -> None:
+    store.start("k_expired_reuse", "POST", "/api/v1/x", ttl_hours=-1, **SCOPE_A)
+    assert store.find("k_expired_reuse", "POST", "/api/v1/x", **SCOPE_A) is None
+    store.start("k_expired_reuse", "POST", "/api/v1/x", {"retry": True}, **SCOPE_A)
+    row = db.fetchone(
+        "SELECT status, request_body_hash FROM idempotency_keys "
+        "WHERE sandbox_id = ? AND organization_id = ? AND actor_id = ? "
+        "AND idempotency_key = 'k_expired_reuse'",
+        (SCOPE_A["sandbox_id"], SCOPE_A["organization_id"], SCOPE_A["actor_id"]),
+    )
+    assert row is not None
+    assert row["status"] == "in_progress"
+    assert row["request_body_hash"] == _hash_body({"retry": True})
+
+
+def test_stale_claim_cannot_complete_after_expired_key_is_reused(
+    store: IdempotencyStore,
+) -> None:
+    old_claim = store.start(
+        "k_stale_claim", "POST", "/api/v1/x", {"try": 1}, ttl_hours=-1, **SCOPE_A
+    )
+    new_claim = store.start(
+        "k_stale_claim", "POST", "/api/v1/x", {"try": 2}, **SCOPE_A
+    )
+    assert not store.complete(
+        "k_stale_claim",
+        "POST",
+        "/api/v1/x",
+        claim_token=old_claim,
+        status=200,
+        response_body={"winner": "old"},
+        **SCOPE_A,
+    )
+    assert store.complete(
+        "k_stale_claim",
+        "POST",
+        "/api/v1/x",
+        claim_token=new_claim,
+        status=200,
+        response_body={"winner": "new"},
+        **SCOPE_A,
+    )
+    cached = store.find("k_stale_claim", "POST", "/api/v1/x", {"try": 2}, **SCOPE_A)
+    assert cached is not None
+    assert json.loads(cached.response_body) == {"winner": "new"}
 
 
 def test_mark_failed(store: IdempotencyStore, db: Database):
     """failed 状态: retry 当新请求, 不复用"""
-    store.start("k_fail", "POST", "/api/v1/x")
+    claim_token = store.start("k_fail", "POST", "/api/v1/x", **SCOPE_A)
     db.conn.commit()
-    store.mark_failed("k_fail", "POST", "/api/v1/x")
+    store.mark_failed(
+        "k_fail", "POST", "/api/v1/x", claim_token=claim_token, **SCOPE_A
+    )
     db.conn.commit()
     row = db.fetchone(
         "SELECT status FROM idempotency_keys WHERE idempotency_key = 'k_fail'"
     )
     assert row["status"] == "failed"
+
+
+def test_failed_key_can_be_reused_immediately(store: IdempotencyStore, db: Database) -> None:
+    claim_token = store.start(
+        "k_failed_reuse", "POST", "/api/v1/x", {"try": 1}, **SCOPE_A
+    )
+    store.mark_failed(
+        "k_failed_reuse",
+        "POST",
+        "/api/v1/x",
+        claim_token=claim_token,
+        **SCOPE_A,
+    )
+    assert store.find("k_failed_reuse", "POST", "/api/v1/x", **SCOPE_A) is None
+    store.start("k_failed_reuse", "POST", "/api/v1/x", {"try": 2}, **SCOPE_A)
+    cached = store.find("k_failed_reuse", "POST", "/api/v1/x", {"try": 2}, **SCOPE_A)
+    assert cached is not None
+    assert cached.status == "in_progress"
 
 
 def test_cleanup_expired(store: IdempotencyStore, db: Database):
@@ -271,17 +440,30 @@ def test_ai_agent_can_use_idempotency(store: IdempotencyStore, db: Database):
     payload = {"title": "供应商合同", "supplier": "X 公司"}
 
     # 第一次 AI 调用
-    cached_1 = store.find("ai_retry_key_001", "POST", "/api/v1/tasks", payload)
+    cached_1 = store.find("ai_retry_key_001", "POST", "/api/v1/tasks", payload, **SCOPE_A)
     assert cached_1 is None
-    store.start("ai_retry_key_001", "POST", "/api/v1/tasks", payload,
-                actor_type="ai_agent", actor_id="ai_sess_001")
+    claim_token = store.start(
+        "ai_retry_key_001",
+        "POST",
+        "/api/v1/tasks",
+        payload,
+        **{**SCOPE_A, "actor_type": "ai_agent"},
+    )
     # ... 假设业务逻辑创建了 task_xyz
     store.complete("ai_retry_key_001", "POST", "/api/v1/tasks",
-                   status=201, response_body={"id": "task_xyz"})
+                   status=201, response_body={"id": "task_xyz"},
+                   claim_token=claim_token,
+                   **{**SCOPE_A, "actor_type": "ai_agent"})
     db.conn.commit()
 
     # AI 因 timeout 触发 retry — 用同一 key
-    cached_2 = store.find("ai_retry_key_001", "POST", "/api/v1/tasks", payload)
+    cached_2 = store.find(
+        "ai_retry_key_001",
+        "POST",
+        "/api/v1/tasks",
+        payload,
+        **{**SCOPE_A, "actor_type": "ai_agent"},
+    )
     assert cached_2 is not None
     assert cached_2.actor_type == "ai_agent"
     body = json.loads(cached_2.response_body)

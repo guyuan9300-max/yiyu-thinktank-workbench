@@ -26,6 +26,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.async_job_scope import (
+    AsyncJobScopeError,
+    load_persisted_job_workspace_context,
+    resolve_client_workspace_context,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -70,27 +76,139 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     return dict(row)
 
 
+class SmartImportScopeNotFound(ValueError):
+    """Direct-id smart-import object is absent from the caller's frozen sandbox."""
+
+
+def _require_sandbox_id(db: Any, sandbox_id: str) -> str:
+    normalized = str(sandbox_id or "").strip()
+    if not normalized:
+        raise SmartImportScopeNotFound("smart import object not found")
+    row = db.fetchone("SELECT id FROM sandboxes WHERE id = ?", (normalized,))
+    if not row:
+        raise SmartImportScopeNotFound("smart import object not found")
+    return normalized
+
+
+def _require_client_in_sandbox(db: Any, client_id: str, sandbox_id: str) -> Any:
+    row = db.fetchone(
+        "SELECT * FROM clients WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+        (client_id, sandbox_id),
+    )
+    if not row:
+        raise SmartImportScopeNotFound("client not found")
+    return row
+
+
+def _require_event_line_in_sandbox(db: Any, event_line_id: str, sandbox_id: str) -> Any:
+    row = db.fetchone(
+        "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+        (event_line_id, sandbox_id),
+    )
+    if not row:
+        raise SmartImportScopeNotFound("event line not found")
+    return row
+
+
+_SESSION_SCOPE_INTEGRITY_SQL = """
+    AND (
+        COALESCE(s.client_id, '') = ''
+        OR EXISTS (
+            SELECT 1 FROM clients c
+            WHERE c.id = s.client_id
+              AND COALESCE(c.sandbox_id, '') = COALESCE(s.sandbox_id, '')
+        )
+    )
+    AND (
+        COALESCE(s.project_event_line_id, '') = ''
+        OR EXISTS (
+            SELECT 1 FROM event_lines e
+            WHERE e.id = s.project_event_line_id
+              AND COALESCE(e.sandbox_id, '') = COALESCE(s.sandbox_id, '')
+        )
+    )
+"""
+
+
+def require_session_in_sandbox(db: Any, session_id: str, sandbox_id: str) -> Any:
+    """Fail closed unless the session and every bound parent stay in one sandbox."""
+    normalized = _require_sandbox_id(db, sandbox_id)
+    row = db.fetchone(
+        """
+        SELECT s.*
+        FROM import_story_sessions s
+        WHERE s.id = ?
+          AND COALESCE(s.sandbox_id, '') = ?
+        """ + _SESSION_SCOPE_INTEGRITY_SQL,
+        (session_id, normalized),
+    )
+    if not row:
+        raise SmartImportScopeNotFound("session not found")
+    return row
+
+
+def require_file_in_sandbox(db: Any, file_id: str, sandbox_id: str) -> Any:
+    normalized = _require_sandbox_id(db, sandbox_id)
+    row = db.fetchone(
+        """
+        SELECT f.*
+        FROM import_staged_files f
+        JOIN import_story_sessions s ON s.id = f.session_id
+        WHERE f.id = ?
+          AND COALESCE(s.sandbox_id, '') = ?
+        """ + _SESSION_SCOPE_INTEGRITY_SQL,
+        (file_id, normalized),
+    )
+    if not row:
+        raise SmartImportScopeNotFound("staged file not found")
+    return row
+
+
+def require_chunk_in_sandbox(db: Any, chunk_id: str, sandbox_id: str) -> Any:
+    normalized = _require_sandbox_id(db, sandbox_id)
+    row = db.fetchone(
+        """
+        SELECT ch.*
+        FROM import_story_chunks ch
+        JOIN import_story_sessions s ON s.id = ch.session_id
+        WHERE ch.id = ?
+          AND COALESCE(s.sandbox_id, '') = ?
+        """ + _SESSION_SCOPE_INTEGRITY_SQL,
+        (chunk_id, normalized),
+    )
+    if not row:
+        raise SmartImportScopeNotFound("chunk not found")
+    return row
+
+
 # ------------------------ Session CRUD ------------------------
 
 
 def create_session(
     db: Any,
     *,
+    sandbox_id: str,
     narrator_user_id: str,
     client_id: str | None = None,
     project_event_line_id: str | None = None,
     title: str = "",
 ) -> str:
     """新建会话, 返回 session id."""
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    if client_id:
+        _require_client_in_sandbox(db, client_id, sandbox_id)
+    if project_event_line_id:
+        _require_event_line_in_sandbox(db, project_event_line_id, sandbox_id)
     session_id = _new_id("is")
     now = _now()
     db.execute(
         """INSERT INTO import_story_sessions
-           (id, client_id, project_event_line_id, narrator_user_id, title,
+           (id, sandbox_id, client_id, project_event_line_id, narrator_user_id, title,
             status, total_chunks, total_files, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'drafting', 0, 0, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, 'drafting', 0, 0, ?, ?)""",
         (
             session_id,
+            sandbox_id,
             client_id or None,
             project_event_line_id or None,
             narrator_user_id or "",
@@ -105,14 +223,9 @@ def create_session(
     return session_id
 
 
-def get_session(db: Any, session_id: str) -> dict[str, Any]:
+def get_session(db: Any, session_id: str, *, sandbox_id: str) -> dict[str, Any]:
     """返回 session 完整状态(含 chunks + staged_files), 用于恢复或预览."""
-    row = db.fetchone(
-        "SELECT * FROM import_story_sessions WHERE id = ?",
-        (session_id,),
-    )
-    if not row:
-        raise ValueError(f"session not found: {session_id}")
+    row = require_session_in_sandbox(db, session_id, sandbox_id)
     session = _row_to_dict(row)
     # parsed_json 字段返回时 hydrate
     chunks_rows = db.fetchall(
@@ -139,10 +252,17 @@ def get_session(db: Any, session_id: str) -> dict[str, Any]:
 def update_session(
     db: Any, session_id: str,
     *,
+    sandbox_id: str,
     client_id: str | None = None,
     project_event_line_id: str | None = None,
     title: str | None = None,
 ) -> None:
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_session_in_sandbox(db, session_id, sandbox_id)
+    if client_id:
+        _require_client_in_sandbox(db, client_id, sandbox_id)
+    if project_event_line_id:
+        _require_event_line_in_sandbox(db, project_event_line_id, sandbox_id)
     updates: list[str] = []
     params: list[Any] = []
     if client_id is not None:
@@ -158,9 +278,10 @@ def update_session(
         return
     updates.append("updated_at = ?")
     params.append(_now())
-    params.append(session_id)
+    params.extend((session_id, sandbox_id))
     db.execute(
-        f"UPDATE import_story_sessions SET {', '.join(updates)} WHERE id = ?",
+        f"UPDATE import_story_sessions SET {', '.join(updates)} "
+        "WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
         tuple(params),
     )
     try:
@@ -169,11 +290,14 @@ def update_session(
         pass
 
 
-def discard_session(db: Any, session_id: str) -> None:
+def discard_session(db: Any, session_id: str, *, sandbox_id: str) -> None:
     """标记 session 为 discarded (软删, 文件留 staging 等清理 job 处理)."""
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_session_in_sandbox(db, session_id, sandbox_id)
     db.execute(
-        "UPDATE import_story_sessions SET status='discarded', updated_at=? WHERE id = ?",
-        (_now(), session_id),
+        "UPDATE import_story_sessions SET status='discarded', updated_at=? "
+        "WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+        (_now(), session_id, sandbox_id),
     )
     try:
         db.conn.commit()
@@ -193,6 +317,7 @@ def _staging_dir(data_dir: str | Path, session_id: str) -> Path:
 def upload_staged_file(
     db: Any,
     *,
+    sandbox_id: str,
     session_id: str,
     filename: str,
     content: bytes,
@@ -200,11 +325,10 @@ def upload_staged_file(
     data_dir: str | Path = "/tmp",
 ) -> dict[str, Any]:
     """把上传文件写到 staging 目录, 记 staged_files 表, 返回 file 元数据."""
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_session_in_sandbox(db, session_id, sandbox_id)
     if not content:
         raise ValueError("upload content is empty")
-    session_row = db.fetchone("SELECT id FROM import_story_sessions WHERE id=?", (session_id,))
-    if not session_row:
-        raise ValueError(f"session not found: {session_id}")
 
     file_id = _new_id("isf")
     safe_filename = filename.replace("/", "_").replace("\\", "_") or "uploaded"
@@ -244,20 +368,31 @@ def upload_staged_file(
     }
 
 
-def delete_staged_file(db: Any, file_id: str) -> None:
-    row = db.fetchone(
-        "SELECT session_id, storage_path FROM import_staged_files WHERE id=?", (file_id,)
-    )
-    if not row:
-        return
+def delete_staged_file(
+    db: Any,
+    file_id: str,
+    *,
+    sandbox_id: str,
+    data_dir: str | Path,
+) -> None:
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    row = require_file_in_sandbox(db, file_id, sandbox_id)
+    expected_root = (Path(data_dir) / "smart_import_staging" / row["session_id"]).resolve()
+    storage_path = Path(str(row["storage_path"] or ""))
+    resolved_storage = storage_path.resolve()
+    try:
+        resolved_storage.relative_to(expected_root)
+    except ValueError as exc:
+        raise ValueError("staged file path is outside its session directory") from exc
+
     db.execute("DELETE FROM import_staged_files WHERE id=?", (file_id,))
     db.execute(
         "UPDATE import_story_sessions SET total_files = MAX(0, total_files - 1), updated_at=? WHERE id=?",
         (_now(), row["session_id"]),
     )
     try:
-        if row["storage_path"] and os.path.exists(row["storage_path"]):
-            os.unlink(row["storage_path"])
+        if row["storage_path"] and os.path.exists(storage_path):
+            storage_path.unlink()
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -272,6 +407,7 @@ def delete_staged_file(db: Any, file_id: str) -> None:
 def add_chunk(
     db: Any, ai: Any,
     *,
+    sandbox_id: str,
     session_id: str,
     raw_text: str,
     file_ids: list[str] | None = None,
@@ -282,11 +418,14 @@ def add_chunk(
     file_ids 是这一段挂载的 staged_files id 列表, 会写入关联表 + 更新
     staged_files.assigned_chunk_id.
     """
-    session_row = db.fetchone(
-        "SELECT id, client_id FROM import_story_sessions WHERE id = ?", (session_id,)
-    )
-    if not session_row:
-        raise ValueError(f"session not found: {session_id}")
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_session_in_sandbox(db, session_id, sandbox_id)
+
+    file_ids = list(dict.fromkeys(file_ids or []))
+    for file_id in file_ids:
+        file_row = require_file_in_sandbox(db, file_id, sandbox_id)
+        if str(file_row["session_id"]) != session_id:
+            raise ValueError("staged file and chunk must be in the same session")
 
     chunk_id = _new_id("ic")
     now = _now()
@@ -305,21 +444,17 @@ def add_chunk(
         (chunk_id, session_id, next_seq, raw_text or "", now, now),
     )
     # 挂文件
-    file_ids = file_ids or []
     for idx, fid in enumerate(file_ids):
-        try:
-            db.execute(
-                """INSERT INTO import_story_chunk_files
-                   (chunk_id, staged_file_id, sequence_in_chunk, role_hint, created_at)
-                   VALUES (?, ?, ?, '', ?)""",
-                (chunk_id, fid, idx, now),
-            )
-            db.execute(
-                "UPDATE import_staged_files SET assigned_chunk_id = ? WHERE id = ? AND session_id = ?",
-                (chunk_id, fid, session_id),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[smart-import] attach file %s to chunk %s failed: %s", fid, chunk_id, exc)
+        db.execute(
+            """INSERT INTO import_story_chunk_files
+               (chunk_id, staged_file_id, sequence_in_chunk, role_hint, created_at)
+               VALUES (?, ?, ?, '', ?)""",
+            (chunk_id, fid, idx, now),
+        )
+        db.execute(
+            "UPDATE import_staged_files SET assigned_chunk_id = ? WHERE id = ? AND session_id = ?",
+            (chunk_id, fid, session_id),
+        )
 
     db.execute(
         "UPDATE import_story_sessions SET total_chunks = total_chunks + 1, updated_at = ? WHERE id = ?",
@@ -332,14 +467,24 @@ def add_chunk(
 
     if auto_parse and raw_text.strip():
         try:
-            parse_chunk(db, ai, chunk_id)
+            parse_chunk(db, ai, chunk_id, sandbox_id=sandbox_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[smart-import] auto parse for chunk %s failed: %s", chunk_id, exc)
 
     return chunk_id
 
 
-def update_chunk_text(db: Any, ai: Any, chunk_id: str, *, raw_text: str, auto_parse: bool = True) -> None:
+def update_chunk_text(
+    db: Any,
+    ai: Any,
+    chunk_id: str,
+    *,
+    sandbox_id: str,
+    raw_text: str,
+    auto_parse: bool = True,
+) -> None:
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_chunk_in_sandbox(db, chunk_id, sandbox_id)
     db.execute(
         "UPDATE import_story_chunks SET raw_text=?, parse_status='pending', updated_at=? WHERE id=?",
         (raw_text, _now(), chunk_id),
@@ -350,22 +495,27 @@ def update_chunk_text(db: Any, ai: Any, chunk_id: str, *, raw_text: str, auto_pa
         pass
     if auto_parse and raw_text.strip():
         try:
-            parse_chunk(db, ai, chunk_id)
+            parse_chunk(db, ai, chunk_id, sandbox_id=sandbox_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[smart-import] reparse chunk %s failed: %s", chunk_id, exc)
 
 
-def patch_chunk_parsed(db: Any, chunk_id: str, new_parsed: dict) -> None:
+def patch_chunk_parsed(
+    db: Any,
+    chunk_id: str,
+    new_parsed: dict,
+    *,
+    sandbox_id: str,
+) -> None:
     """用户 inline 编辑某字段后, 用新的 parsed 整体覆盖 chunk.parsed_json.
 
     不调用 LLM。设 user_edited_parsed=1 标记此 chunk 已被人工修订过,
     以后即使重新解析也保留用户改动 (M5+ 处理覆盖策略, 这里先 simple)。
     """
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_chunk_in_sandbox(db, chunk_id, sandbox_id)
     if not isinstance(new_parsed, dict):
         raise ValueError("parsed must be a JSON object")
-    row = db.fetchone("SELECT id FROM import_story_chunks WHERE id=?", (chunk_id,))
-    if not row:
-        raise ValueError(f"chunk not found: {chunk_id}")
     cleaned = _clean_parsed_output(new_parsed)
     db.execute(
         """UPDATE import_story_chunks SET parsed_json=?, parse_status='parsed',
@@ -378,10 +528,9 @@ def patch_chunk_parsed(db: Any, chunk_id: str, new_parsed: dict) -> None:
         pass
 
 
-def delete_chunk(db: Any, chunk_id: str) -> None:
-    row = db.fetchone("SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,))
-    if not row:
-        return
+def delete_chunk(db: Any, chunk_id: str, *, sandbox_id: str) -> None:
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    row = require_chunk_in_sandbox(db, chunk_id, sandbox_id)
     # 文件 unassign 回 pool
     db.execute(
         "UPDATE import_staged_files SET assigned_chunk_id = NULL WHERE assigned_chunk_id = ?",
@@ -398,14 +547,19 @@ def delete_chunk(db: Any, chunk_id: str) -> None:
         pass
 
 
-def assign_file_to_chunk(db: Any, *, file_id: str, chunk_id: str | None) -> None:
+def assign_file_to_chunk(
+    db: Any,
+    *,
+    sandbox_id: str,
+    file_id: str,
+    chunk_id: str | None,
+) -> None:
     """把 staged file 挂到某 chunk (chunk_id=None → 取消挂载, 回 pool)."""
-    file_row = db.fetchone("SELECT id, session_id FROM import_staged_files WHERE id=?", (file_id,))
-    if not file_row:
-        raise ValueError(f"staged file not found: {file_id}")
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    file_row = require_file_in_sandbox(db, file_id, sandbox_id)
     if chunk_id:
-        chunk_row = db.fetchone("SELECT session_id FROM import_story_chunks WHERE id=?", (chunk_id,))
-        if not chunk_row or chunk_row["session_id"] != file_row["session_id"]:
+        chunk_row = require_chunk_in_sandbox(db, chunk_id, sandbox_id)
+        if chunk_row["session_id"] != file_row["session_id"]:
             raise ValueError("chunk and file not in same session")
     db.execute(
         "UPDATE import_staged_files SET assigned_chunk_id=? WHERE id=?",
@@ -638,19 +792,17 @@ _PARSE_RESPONSE_SCHEMA = {
 }
 
 
-def parse_chunk(db: Any, ai: Any, chunk_id: str) -> dict[str, Any]:
+def parse_chunk(
+    db: Any,
+    ai: Any,
+    chunk_id: str,
+    *,
+    sandbox_id: str,
+) -> dict[str, Any]:
     """同步调 LLM 解析 chunk, 把结果写回 parsed_json."""
-    chunk_row = db.fetchone(
-        "SELECT * FROM import_story_chunks WHERE id = ?", (chunk_id,)
-    )
-    if not chunk_row:
-        raise ValueError(f"chunk not found: {chunk_id}")
-    session_row = db.fetchone(
-        "SELECT * FROM import_story_sessions WHERE id = ?",
-        (chunk_row["session_id"],),
-    )
-    if not session_row:
-        raise ValueError("session not found")
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    chunk_row = require_chunk_in_sandbox(db, chunk_id, sandbox_id)
+    session_row = require_session_in_sandbox(db, chunk_row["session_id"], sandbox_id)
 
     # 拉客户/项目名(可空)
     client_name = ""
@@ -745,7 +897,12 @@ def parse_chunk(db: Any, ai: Any, chunk_id: str) -> dict[str, Any]:
 # ------------------------ Preview (聚合) ------------------------
 
 
-def aggregate_session_to_plan(db: Any, session_id: str) -> dict[str, Any]:
+def aggregate_session_to_plan(
+    db: Any,
+    session_id: str,
+    *,
+    sandbox_id: str,
+) -> dict[str, Any]:
     """聚合所有 chunks 的 parsed_json → 一个 import_plan.
 
     去重逻辑:
@@ -753,6 +910,8 @@ def aggregate_session_to_plan(db: Any, session_id: str) -> dict[str, Any]:
       - opinions / events / commitments / risk_signals: 简单合并(留给 M3 commit 时去重)
       - files_classified: 按 original_filename 去重(取最后一个 chunk 的分类)
     """
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    require_session_in_sandbox(db, session_id, sandbox_id)
     chunks = db.fetchall(
         """SELECT id, sequence, raw_text, parsed_json, parse_status
            FROM import_story_chunks WHERE session_id = ?
@@ -888,6 +1047,7 @@ def commit_session(
     db: Any,
     ai: Any,
     *,
+    sandbox_id: str,
     session_id: str,
     data_dir: str | Path,
     ingest_document_fn: Any = None,  # ingest_document_knowledge from knowledge_v2
@@ -905,11 +1065,8 @@ def commit_session(
     返回 stats: { entities_created, atomic_facts_created, commitments_created,
                   risk_signals_created, events_created, documents_created, errors }
     """
-    session_row = db.fetchone(
-        "SELECT * FROM import_story_sessions WHERE id = ?", (session_id,)
-    )
-    if not session_row:
-        raise ValueError(f"session not found: {session_id}")
+    sandbox_id = _require_sandbox_id(db, sandbox_id)
+    session_row = require_session_in_sandbox(db, session_id, sandbox_id)
     if session_row["status"] == "imported":
         raise ValueError("session already imported")
     if session_row["status"] == "discarded":
@@ -927,11 +1084,11 @@ def commit_session(
     )
     for c in pending_chunks:
         try:
-            parse_chunk(db, ai, c["id"])
+            parse_chunk(db, ai, c["id"], sandbox_id=sandbox_id)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[smart-import commit] chunk %s reparse failed: %s", c["id"], exc)
 
-    plan = aggregate_session_to_plan(db, session_id)
+    plan = aggregate_session_to_plan(db, session_id, sandbox_id=sandbox_id)
     now = _now()
     stats = {
         "entities_created": 0,
@@ -947,17 +1104,14 @@ def commit_session(
     # 单条业务错误(format/dedup)仍走内层 try/except,只跳过那条不影响整体.
     # P0-Bug2: 收集所有事务内 copy 出的目标文件, rollback 时 cleanup 防孤儿文件.
     copied_files: list[Path] = []
+    ingest_sandbox_id = ""
     db.begin_transaction("IMMEDIATE")
     try:
         # P0 TOCTOU 防御: 事务内再次检查 status,
         # 防止两个并发请求都通过函数最前面的检查后, 都进入事务写库, 导致数据重复.
         # IMMEDIATE 锁后, 另一个并发请求会在 begin_transaction 阻塞, 它进来时再次读 status
         # 看到的就是上一个事务标完 'imported' 的状态, 直接 raise.
-        recheck_row = db.fetchone(
-            "SELECT status FROM import_story_sessions WHERE id=?", (session_id,)
-        )
-        if not recheck_row:
-            raise ValueError(f"session disappeared: {session_id}")
+        recheck_row = require_session_in_sandbox(db, session_id, sandbox_id)
         cur_status = str(recheck_row["status"] or "")
         if cur_status == "imported":
             raise ValueError("session already imported (race detected)")
@@ -1231,15 +1385,19 @@ def commit_session(
         ingest_job_id = ""
         if ingest_queue and ingest_document_fn:
             ingest_job_id = _new_id("kjob")
+            workspace_context = resolve_client_workspace_context(db, client_id)
+            if workspace_context.sandbox_id != sandbox_id:
+                raise SmartImportScopeNotFound("session not found")
+            ingest_sandbox_id = workspace_context.sandbox_id
             db.execute(
                 """INSERT INTO knowledge_jobs
-                   (id, client_id, job_type, status, payload_json, total_items,
+                   (id, client_id, sandbox_id, job_type, status, payload_json, total_items,
                     processed_items, last_error, created_at, started_at,
                     finished_at, updated_at)
-                   VALUES (?, ?, 'smart_import_ingest', 'running', ?, ?, 0,
+                   VALUES (?, ?, ?, 'smart_import_ingest', 'running', ?, ?, 0,
                            NULL, ?, ?, NULL, ?)""",
                 (
-                    ingest_job_id, client_id,
+                    ingest_job_id, client_id, workspace_context.sandbox_id,
                     json.dumps({
                         "sessionId": session_id,
                         "fileCount": len(ingest_queue),
@@ -1250,8 +1408,9 @@ def commit_session(
 
         # === 8. 标记 session imported ===
         db.execute(
-            "UPDATE import_story_sessions SET status='imported', imported_at=?, updated_at=? WHERE id=?",
-            (now, now, session_id),
+            "UPDATE import_story_sessions SET status='imported', imported_at=?, updated_at=? "
+            "WHERE id=? AND COALESCE(sandbox_id, '')=?",
+            (now, now, session_id, sandbox_id),
         )
         db.commit_transaction()
     except Exception:
@@ -1275,7 +1434,7 @@ def commit_session(
         import threading
         threading.Thread(
             target=_bg_ingest_files,
-            args=(db, ingest_document_fn, ai, data_dir, client_id, ingest_job_id, ingest_queue),
+            args=(db, ingest_document_fn, ai, data_dir, client_id, ingest_sandbox_id, ingest_job_id, ingest_queue),
             daemon=True,
             name=f"smart-import-ingest-{session_id[:12]}",
         ).start()
@@ -1292,18 +1451,47 @@ def _reap_stale_knowledge_jobs(db: Any, *, max_running_minutes: int = 30) -> int
     每次 _bg_ingest_files 结束时顺手清一遍. 返回 reap 数.
     """
     try:
-        cur = db.execute(
-            """UPDATE knowledge_jobs
-               SET status='failed',
-                   last_error=COALESCE(last_error,'') || ' [auto-reaped: stale running > ' || ? || ' min]',
-                   finished_at=?,
-                   updated_at=?
-               WHERE status='running'
-                 AND COALESCE(updated_at, started_at, created_at) < datetime('now', ?)""",
-            (max_running_minutes, _now(), _now(), f"-{max_running_minutes} minutes"),
-        )
-        db.conn.commit()
-        n = cur.rowcount or 0
+        def _reap(conn) -> int:
+            stale_rows = conn.execute(
+                """
+                SELECT id, sandbox_id
+                FROM knowledge_jobs
+                WHERE status = 'running'
+                  AND COALESCE(updated_at, started_at, created_at) < datetime('now', ?)
+                """,
+                (f"-{max_running_minutes} minutes",),
+            ).fetchall()
+            count = 0
+            for row in stale_rows:
+                now = _now()
+                cur = conn.execute(
+                    """UPDATE knowledge_jobs
+                       SET status='failed',
+                           last_error=COALESCE(last_error,'') || ' [auto-reaped: stale running > ' || ? || ' min]',
+                           finished_at=?,
+                           updated_at=?
+                       WHERE id = ?
+                         AND COALESCE(sandbox_id, '') = ?
+                         AND status='running'
+                         AND COALESCE(updated_at, started_at, created_at) < datetime('now', ?)""",
+                    (
+                        max_running_minutes,
+                        now,
+                        now,
+                        str(row["id"]),
+                        str(row["sandbox_id"] or ""),
+                        f"-{max_running_minutes} minutes",
+                    ),
+                )
+                count += max(0, int(cur.rowcount or 0))
+            return count
+
+        transaction_runner = getattr(db, "run_in_transaction", None)
+        if callable(transaction_runner):
+            n = int(transaction_runner(_reap) or 0)
+        else:
+            n = _reap(db.conn)
+            db.conn.commit()
         if n > 0:
             logger.info("[reap_stale_knowledge_jobs] reaped %d stale jobs", n)
         return n
@@ -1312,12 +1500,14 @@ def _reap_stale_knowledge_jobs(db: Any, *, max_running_minutes: int = 30) -> int
         return 0
 
 
-def _bg_ingest_files(
+def _run_bg_ingest_files_scoped(
     db: Any,
     ingest_document_fn: Any,
     ai: Any,
     data_dir: str | Path,
     client_id: str,
+    sandbox_id: str,
+    workspace_context: Any,
     job_id: str,
     queue: list[dict[str, Any]],
 ) -> None:
@@ -1329,6 +1519,9 @@ def _bg_ingest_files(
     processed = 0
     last_error = ""
     fatal_error: str | None = None  # outer 致命错误标记
+    from app.services.knowledge_v2 import _resolve_team_context_for_async_worker
+
+    team_context = _resolve_team_context_for_async_worker(db, workspace_context)
     try:
         for item in queue:
             try:
@@ -1346,6 +1539,10 @@ def _bg_ingest_files(
                     fallback_excerpt=item["excerpt"],
                     created_at=_now(),
                     ai_service=ai,
+                    organization_id=team_context.get("organization_id", ""),
+                    owner_user_id=team_context.get("owner_user_id", ""),
+                    department_id=team_context.get("department_id", ""),
+                    visibility_scope=team_context.get("visibility_scope", "project_public"),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[smart-import bg ingest] doc=%s failed", item["doc_id"])
@@ -1355,8 +1552,8 @@ def _bg_ingest_files(
                 try:
                     db.execute(
                         """UPDATE knowledge_jobs SET processed_items = ?,
-                           last_error = ?, updated_at = ? WHERE id = ?""",
-                        (processed, last_error[:500], _now(), job_id),
+                           last_error = ?, updated_at = ? WHERE id = ? AND sandbox_id = ?""",
+                        (processed, last_error[:500], _now(), job_id, sandbox_id),
                     )
                     db.conn.commit()
                 except Exception:
@@ -1375,8 +1572,8 @@ def _bg_ingest_files(
             finished = _now()
             db.execute(
                 """UPDATE knowledge_jobs SET status = ?, processed_items = ?,
-                   last_error = ?, finished_at = ?, updated_at = ? WHERE id = ?""",
-                (final_status, processed, (final_error or "")[:500], finished, finished, job_id),
+                   last_error = ?, finished_at = ?, updated_at = ? WHERE id = ? AND sandbox_id = ?""",
+                (final_status, processed, (final_error or "")[:500], finished, finished, job_id, sandbox_id),
             )
             db.conn.commit()
         except Exception:
@@ -1398,3 +1595,57 @@ def _bg_ingest_files(
         )
     except Exception:
         logger.exception("[smart-import bg ingest] broadcast failed")
+
+
+def _bg_ingest_files(
+    db: Any,
+    ingest_document_fn: Any,
+    ai: Any,
+    data_dir: str | Path,
+    client_id: str,
+    sandbox_id: str,
+    job_id: str,
+    queue: list[dict[str, Any]],
+) -> None:
+    """Validate and bind the persisted scope before the daemon touches business data or AI."""
+
+    try:
+        workspace_context = load_persisted_job_workspace_context(
+            db,
+            sandbox_id=sandbox_id,
+            client_id=client_id,
+        )
+        use_sandbox = getattr(ai, "use_sandbox", None)
+        if not callable(use_sandbox):
+            raise AsyncJobScopeError(
+                "ai_scope_binding_unavailable",
+                client_id=client_id,
+                sandbox_id=sandbox_id,
+            )
+        with use_sandbox(workspace_context.sandbox_id):
+            _run_bg_ingest_files_scoped(
+                db,
+                ingest_document_fn,
+                ai,
+                data_dir,
+                client_id,
+                workspace_context.sandbox_id,
+                workspace_context,
+                job_id,
+                queue,
+            )
+    except Exception as error:
+        logger.exception("[smart-import bg ingest] scope validation failed job=%s", job_id)
+        try:
+            finished = _now()
+            db.execute(
+                """
+                UPDATE knowledge_jobs
+                SET status = 'failed', last_error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                """,
+                (str(error)[:500], finished, finished, job_id, str(sandbox_id or "")),
+            )
+            db.conn.commit()
+        except Exception:
+            logger.exception("[smart-import bg ingest] scope failure finalization failed job=%s", job_id)

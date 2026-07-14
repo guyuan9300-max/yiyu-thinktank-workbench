@@ -7,6 +7,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+import app.services.link_material_import as link_material_import  # noqa: E402
 from app.services.link_material_import import (  # noqa: E402
     LinkMaterialImportError,
     LinkMaterialImportOptions,
@@ -19,6 +20,16 @@ from app.services.link_material_import import (  # noqa: E402
     read_valid_downloaded_subtitles,
     _clean_subtitle_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stable_public_platform_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests must not depend on external DNS while fetch guards stay active."""
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"93.184.216.34"},
+    )
 
 
 def test_detect_bilibili_link_and_bv() -> None:
@@ -40,6 +51,121 @@ def test_detect_xiaohongshu_link() -> None:
 def test_detect_unsupported_link_has_clear_error() -> None:
     with pytest.raises(LinkMaterialImportError, match="暂不支持"):
         detect_link_material("https://example.com/video")
+
+
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "http://www.bilibili.com/video/BV1abc123456",
+        "https://evil.example/?next=https://www.bilibili.com/video/BV1abc123456",
+        "https://www.bilibili.com.evil.example/video/BV1abc123456",
+        "https://www.bilibili.com@127.0.0.1/private",
+        "https://mp.weixin.qq.com.evil.example/s/article",
+        "https://evil.mp.weixin.qq.com/s/article",
+    ],
+)
+def test_detect_rejects_insecure_or_disguised_platform_urls(source_url: str) -> None:
+    with pytest.raises(LinkMaterialImportError):
+        detect_link_material(source_url)
+
+
+def test_fetch_guard_rejects_allowlisted_hostname_resolving_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        link_material_import,
+        "_resolve_hostname_addresses",
+        lambda _hostname: {"127.0.0.1"},
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._assert_public_link_target(
+            "https://www.bilibili.com/video/BV1abc123456",
+            expected_platform="bilibili",
+        )
+
+
+class _FakeRedirectResponse:
+    def __init__(self, status_code: int, *, location: str | None = None) -> None:
+        self.status_code = status_code
+        self.headers = {"location": location} if location is not None else {}
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeRedirectClient:
+    def __init__(self, responses: list[_FakeRedirectResponse]) -> None:
+        self._responses = iter(responses)
+        self.urls: list[str] = []
+        self.follow_redirects: list[bool] = []
+
+    def get(self, url: str, *, follow_redirects: bool) -> _FakeRedirectResponse:
+        self.urls.append(url)
+        self.follow_redirects.append(follow_redirects)
+        return next(self._responses)
+
+
+def test_safe_fetch_validates_each_https_redirect_hop() -> None:
+    first = _FakeRedirectResponse(302, location="/s/next")
+    final = _FakeRedirectResponse(200)
+    client = _FakeRedirectClient([first, final])
+
+    response = link_material_import._safe_get_with_redirects(
+        client,
+        "https://mp.weixin.qq.com/s/original",
+        platform="wechat_article",
+    )
+
+    assert response is final
+    assert first.closed is True
+    assert client.urls == [
+        "https://mp.weixin.qq.com/s/original",
+        "https://mp.weixin.qq.com/s/next",
+    ]
+    assert client.follow_redirects == [False, False]
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "http://mp.weixin.qq.com/s/insecure",
+        "https://evil.example/s/off-platform",
+    ],
+)
+def test_safe_fetch_never_requests_insecure_or_off_platform_redirect(location: str) -> None:
+    redirect_response = _FakeRedirectResponse(302, location=location)
+    client = _FakeRedirectClient([redirect_response])
+
+    with pytest.raises(LinkMaterialImportError):
+        link_material_import._safe_get_with_redirects(
+            client,
+            "https://mp.weixin.qq.com/s/original",
+            platform="wechat_article",
+        )
+
+    assert client.urls == ["https://mp.weixin.qq.com/s/original"]
+    assert redirect_response.closed is True
+
+
+def test_safe_fetch_rechecks_private_dns_after_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    def resolved_addresses(hostname: str) -> set[str]:
+        return {"10.0.0.8"} if hostname == "api.bilibili.com" else {"93.184.216.34"}
+
+    monkeypatch.setattr(link_material_import, "_resolve_hostname_addresses", resolved_addresses)
+    client = _FakeRedirectClient(
+        [_FakeRedirectResponse(302, location="https://api.bilibili.com/video/redirected")]
+    )
+
+    with pytest.raises(LinkMaterialImportError, match="私有网络"):
+        link_material_import._safe_get_with_redirects(
+            client,
+            "https://www.bilibili.com/video/original",
+            platform="bilibili",
+        )
+
+    assert client.urls == ["https://www.bilibili.com/video/original"]
 
 
 def test_clean_subtitle_text_removes_timestamps_and_dedupes() -> None:
@@ -593,10 +719,10 @@ def test_classify_image_note_as_no_video() -> None:
 def test_detect_extracts_url_from_share_blurb() -> None:
     """小红书/B站 App 复制的是整段分享文案,要能从中抠出真正的 URL。"""
     xhs = detect_link_material(
-        "终于找到这封神演讲！治愈人间所有焦虑！ http://xhslink.com/o/6FKLX5DG6Bl 复制一下，跳转【小红书】即刻浏览笔记。"
+        "终于找到这封神演讲！治愈人间所有焦虑！ https://xhslink.com/o/6FKLX5DG6Bl 复制一下，跳转【小红书】即刻浏览笔记。"
     )
     assert xhs.platform == "xiaohongshu"
-    assert xhs.normalized_url == "http://xhslink.com/o/6FKLX5DG6Bl"
+    assert xhs.normalized_url == "https://xhslink.com/o/6FKLX5DG6Bl"
 
     # 带 query 参数的完整分享链接也要完整保留(含 xsec_token)
     full = detect_link_material(

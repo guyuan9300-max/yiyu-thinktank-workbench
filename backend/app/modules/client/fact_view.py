@@ -77,12 +77,38 @@ class ClientFactView:
         db: Any,
         client_repo: ClientRepository | None = None,
         commitment_repo: CommitmentRepository | None = None,
+        *,
+        sandbox_id: str = "",
+        organization_id: str = "",
     ) -> None:
         self._db = _wrap_db(db)
         # 注入或自动 new (跟 W1 organization 模式一致)
         self._client_repo = client_repo or get_client_repository(db)
         self._commitment_repo = commitment_repo or get_commitment_repository(db)
+        self._sandbox_id = str(sandbox_id or "").strip()
+        self._organization_id = str(organization_id or "").strip()
         self._fact_changed_callbacks: list[FactChangedCallback] = []
+
+    def _client_is_in_scope(self, client_id: str) -> bool:
+        """Resolve the parent client inside the frozen workspace before any child read."""
+        row = self._db.fetchone(
+            """
+            SELECT c.id
+            FROM clients c
+            LEFT JOIN sandboxes s ON s.id = c.sandbox_id
+            WHERE c.id = ?
+              AND (? = '' OR COALESCE(c.sandbox_id, '') = ?)
+              AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+            """,
+            (
+                client_id,
+                self._sandbox_id,
+                self._sandbox_id,
+                self._organization_id,
+                self._organization_id,
+            ),
+        )
+        return row is not None
 
     # ── 核心方法 · 完整 bundle ─────────────────────────────────
     def get_fact_bundle(
@@ -92,6 +118,8 @@ class ClientFactView:
         include_archived: bool = False,
     ) -> ClientFactBundle | None:
         """一个客户的全部事实。不存在返回 None。"""
+        if not self._client_is_in_scope(client_id):
+            return None
         client = self._client_repo.get_by_id(client_id)
         if client is None:
             return None
@@ -137,6 +165,8 @@ class ClientFactView:
 
         给客户列表用,避免每次都拉 200 条 atomic_facts。
         """
+        if not self._client_is_in_scope(client_id):
+            return None
         client = self._client_repo.get_by_id(client_id)
         if client is None:
             return None
@@ -146,13 +176,30 @@ class ClientFactView:
         # 用 COUNT 查询代替全量 fetch
         counts = {
             "event_lines": self._count(
-                "SELECT COUNT(*) AS n FROM event_lines WHERE primary_client_id = ?",
-                (client_id,),
+                """SELECT COUNT(*) AS n FROM event_lines
+                   WHERE primary_client_id = ?
+                     AND (? = '' OR COALESCE(sandbox_id, '') = ?)
+                     AND (? = '' OR COALESCE(organization_id, '') = ?)""",
+                (
+                    client_id,
+                    self._sandbox_id,
+                    self._sandbox_id,
+                    self._organization_id,
+                    self._organization_id,
+                ),
             ),
             "tasks": self._count(
                 "SELECT COUNT(*) AS n FROM tasks WHERE client_id = ? "
+                "AND (? = '' OR COALESCE(sandbox_id, '') = ?) "
+                "AND (? = '' OR COALESCE(organization_id, '') = ?) "
                 "AND status NOT IN ('done', 'completed', 'cancelled', 'archived')",
-                (client_id,),
+                (
+                    client_id,
+                    self._sandbox_id,
+                    self._sandbox_id,
+                    self._organization_id,
+                    self._organization_id,
+                ),
             ),
             "commitments": len(
                 self._commitment_repo.list_for_client_status_grouped(client_id)
@@ -203,9 +250,17 @@ class ClientFactView:
                        created_at, updated_at
                 FROM event_lines
                 WHERE primary_client_id = ?
+                  AND (? = '' OR COALESCE(sandbox_id, '') = ?)
+                  AND (? = '' OR COALESCE(organization_id, '') = ?)
                 ORDER BY updated_at DESC
                 """,
-                (client_id,),
+                (
+                    client_id,
+                    self._sandbox_id,
+                    self._sandbox_id,
+                    self._organization_id,
+                    self._organization_id,
+                ),
             )
         except Exception:
             return []
@@ -259,12 +314,22 @@ class ClientFactView:
                        evidence_count, source_type, source_id,
                        created_at, updated_at
                 FROM tasks
-                WHERE client_id = ? {status_clause}
+                WHERE client_id = ?
+                  AND (? = '' OR COALESCE(sandbox_id, '') = ?)
+                  AND (? = '' OR COALESCE(organization_id, '') = ?)
+                  {status_clause}
                 ORDER BY COALESCE(deadline_at, due_date) ASC,
                          updated_at DESC
                 LIMIT ?
                 """,
-                (client_id, limit),
+                (
+                    client_id,
+                    self._sandbox_id,
+                    self._sandbox_id,
+                    self._organization_id,
+                    self._organization_id,
+                    limit,
+                ),
             )
         except Exception:
             return []
@@ -459,6 +524,15 @@ class ClientFactView:
         return bundles
 
 
-def get_client_fact_view(db: Any) -> ClientFactView:
+def get_client_fact_view(
+    db: Any,
+    *,
+    sandbox_id: str = "",
+    organization_id: str = "",
+) -> ClientFactView:
     """工厂 (跟 W1 / W3 工厂模式一致)"""
-    return ClientFactView(db)
+    return ClientFactView(
+        db,
+        sandbox_id=sandbox_id,
+        organization_id=organization_id,
+    )

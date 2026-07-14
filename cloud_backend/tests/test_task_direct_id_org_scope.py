@@ -39,6 +39,31 @@ def auth_headers(client: TestClient) -> dict[str, str]:
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
 
 
+def configure_org_ai_and_asr(client: TestClient) -> None:
+    headers = auth_headers(client)
+    ai = client.post(
+        "/api/v1/settings/org-ai-config",
+        headers=headers,
+        json={
+            "aiProvider": "openai-compatible",
+            "aiBaseUrl": "https://models.example.com/v1",
+            "aiModel": "test-model",
+            "apiKey": "direct-id-org-ai-key",
+        },
+    )
+    assert ai.status_code == 200, ai.text
+    asr = client.post(
+        "/api/v1/settings/org-asr-config",
+        headers=headers,
+        json={
+            "provider": "doubao_file",
+            "appId": "direct-id-org-asr-app",
+            "accessToken": "direct-id-org-asr-token",
+        },
+    )
+    assert asr.status_code == 200, asr.text
+
+
 def user_auth_headers(client: TestClient, role: str) -> dict[str, str]:
     if role == "admin":
         return auth_headers(client)
@@ -151,9 +176,26 @@ def install_transcription_spies(
     monkeypatch: pytest.MonkeyPatch,
     watched_attachment_path: Path,
 ) -> dict[str, int]:
-    calls = {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    calls = {
+        "asr_config": 0,
+        "ai_config": 0,
+        "file_read": 0,
+        "asr": 0,
+        "document": 0,
+        "summary": 0,
+    }
     read_bytes = Path.read_bytes
     create_document = cloud_main._create_consultation_knowledge_request_internal
+    resolve_asr_config = cloud_main._org_asr_runtime_config_or_503
+    resolve_ai_config = cloud_main._org_ai_runtime_config_or_503
+
+    def resolve_asr_config_spy(*args, **kwargs):
+        calls["asr_config"] += 1
+        return resolve_asr_config(*args, **kwargs)
+
+    def resolve_ai_config_spy(*args, **kwargs):
+        calls["ai_config"] += 1
+        return resolve_ai_config(*args, **kwargs)
 
     def read_bytes_spy(path: Path) -> bytes:
         if path == watched_attachment_path:
@@ -161,6 +203,8 @@ def install_transcription_spies(
         return read_bytes(path)
 
     def transcribe(*args, **kwargs) -> str:
+        assert kwargs["app_id"] == "direct-id-org-asr-app"
+        assert kwargs["access_token"] == "direct-id-org-asr-token"
         calls["asr"] += 1
         return "权限边界测试转写文本"
 
@@ -173,6 +217,8 @@ def install_transcription_spies(
         return "权限边界测试摘要"
 
     monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(cloud_main, "_org_asr_runtime_config_or_503", resolve_asr_config_spy)
+    monkeypatch.setattr(cloud_main, "_org_ai_runtime_config_or_503", resolve_ai_config_spy)
     monkeypatch.setattr(cloud_main, "transcribe_audio_with_doubao", transcribe)
     monkeypatch.setattr(cloud_main, "_create_consultation_knowledge_request_internal", create_document_spy)
     monkeypatch.setattr(cloud_main, "_generate_recording_summary", summarize)
@@ -753,8 +799,79 @@ def test_cross_org_attachment_transcription_stops_before_file_ai_or_document_acc
 
     assert response.status_code == 404, response.text
     assert response.json() == {"detail": "Task not found"}
-    assert calls == {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    assert calls == {
+        "asr_config": 0,
+        "ai_config": 0,
+        "file_read": 0,
+        "asr": 0,
+        "document": 0,
+        "summary": 0,
+    }
     assert task_sensitive_snapshot(client, FOREIGN_TASK_ID) == before
+
+
+@pytest.mark.parametrize("parent_kind", ["event_line", "client"])
+def test_corrupt_cross_org_attachment_parent_stops_before_config_file_or_provider_access(
+    parent_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    seed_same_org_task(client)
+    seed_foreign_task(client)
+    state = client.app.state.app_state
+    timestamp = now_iso()
+    parent_id = f"foreign_attachment_parent_{parent_kind}"
+    if parent_kind == "event_line":
+        state.db.execute(
+            """
+            INSERT INTO event_lines(
+                id, organization_id, name, kind, status, owner_id,
+                participant_ids_json, created_at, updated_at
+            ) VALUES(?, ?, '外组织事件线', 'custom', 'active', ?, '[]', ?, ?)
+            """,
+            (parent_id, FOREIGN_ORG_ID, FOREIGN_USER_ID, timestamp, timestamp),
+        )
+    else:
+        state.db.execute(
+            """
+            INSERT INTO clients(id, organization_id, name, alias, type, created_at, updated_at)
+            VALUES(?, ?, '外组织客户', '', 'client', ?, ?)
+            """,
+            (parent_id, FOREIGN_ORG_ID, timestamp, timestamp),
+        )
+
+    attachment_id = f"attachment_corrupt_parent_{parent_kind}"
+    attachment_path = seed_audio_attachment(
+        client,
+        task_id=SAME_ORG_TASK_ID,
+        organization_id=DEFAULT_ORG_ID,
+        attachment_id=attachment_id,
+        created_by_user_id=SAME_ORG_USERS["creator"][0],
+    )
+    state.db.execute(
+        f"UPDATE task_attachments SET {parent_kind}_id = ? WHERE id = ?",
+        (parent_id, attachment_id),
+    )
+    calls = install_transcription_spies(monkeypatch, attachment_path)
+    before = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
+
+    response = client.post(
+        f"/api/v1/tasks/{SAME_ORG_TASK_ID}/attachments/{attachment_id}/transcribe-to-document",
+        headers=headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert calls == {
+        "asr_config": 0,
+        "ai_config": 0,
+        "file_read": 0,
+        "asr": 0,
+        "document": 0,
+        "summary": 0,
+    }
+    assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
 
 
 def test_same_org_outsider_attachment_transcription_stops_before_any_side_effect(
@@ -782,7 +899,14 @@ def test_same_org_outsider_attachment_transcription_stops_before_any_side_effect
 
     assert response.status_code == 404, response.text
     assert response.json() == {"detail": "Task not found"}
-    assert calls == {"file_read": 0, "asr": 0, "document": 0, "summary": 0}
+    assert calls == {
+        "asr_config": 0,
+        "ai_config": 0,
+        "file_read": 0,
+        "asr": 0,
+        "document": 0,
+        "summary": 0,
+    }
     assert task_sensitive_snapshot(client, SAME_ORG_TASK_ID) == before
 
 
@@ -793,6 +917,7 @@ def test_task_members_and_admin_can_transcribe_audio_attachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = make_client(tmp_path, monkeypatch)
+    configure_org_ai_and_asr(client)
     seed_same_org_task(client)
     attachment_id = f"attachment_direct_id_legal_{role}"
     attachment_path = seed_audio_attachment(
@@ -813,7 +938,14 @@ def test_task_members_and_admin_can_transcribe_audio_attachment(
 
     assert response.status_code == 200, response.text
     assert response.json()["transcript"] == "权限边界测试转写文本"
-    assert calls == {"file_read": 1, "asr": 1, "document": 1, "summary": 1}
+    assert calls == {
+        "asr_config": 1,
+        "ai_config": 1,
+        "file_read": 1,
+        "asr": 1,
+        "document": 1,
+        "summary": 1,
+    }
     after = task_sensitive_snapshot(client, SAME_ORG_TASK_ID)
     assert after["activity_count"] == int(before["activity_count"]) + 1
     assert after["consultation_answer_count"] == int(before["consultation_answer_count"]) + 1

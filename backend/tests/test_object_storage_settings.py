@@ -121,3 +121,28 @@ def test_object_storage_settings_are_scoped_by_sandbox() -> None:
     assert record_b.credentials == {}
     assert record_b.hasCredentials is False
     assert local_record.provider == ""
+
+
+def test_missing_sandbox_settings_do_not_fall_back_to_global_credentials() -> None:
+    db = _InMemoryDb()
+    global_payload = ObjectStorageSettingsPayload(
+        provider="volcano_tos",
+        credentials={"access_key_id": "GLOBAL_AK", "secret_access_key": "GLOBAL_SK"},
+        extraConfig={"bucket": "global-bucket"},
+        enabled=True,
+    )
+    save_object_storage_settings(  # type: ignore[arg-type]
+        db,
+        global_payload,
+        now_iso="2026-07-11T10:00:00+08:00",
+    )
+
+    missing = get_object_storage_settings(  # type: ignore[arg-type]
+        db,
+        sandbox_id="sbx_org_without_storage_config",
+    )
+
+    assert missing.provider == ""
+    assert missing.credentials == {}
+    assert missing.extraConfig == {}
+    assert missing.enabled is False

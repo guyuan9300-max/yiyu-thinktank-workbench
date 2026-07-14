@@ -32,9 +32,11 @@ class _DbLike:
 @pytest.fixture()
 def db() -> _DbLike:
     conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
     conn.execute(
         """CREATE TABLE knowledge_jobs (
             id TEXT PRIMARY KEY,
+            sandbox_id TEXT,
             status TEXT,
             last_error TEXT,
             started_at TEXT,
@@ -45,15 +47,15 @@ def db() -> _DbLike:
     )
     # A: stale running(2020 年,远早于 30 分钟前)→ 应被 reap
     conn.execute(
-        "INSERT INTO knowledge_jobs(id,status,updated_at,created_at) VALUES('A','running','2020-01-01T00:00:00','2020-01-01T00:00:00')"
+        "INSERT INTO knowledge_jobs(id,sandbox_id,status,updated_at,created_at) VALUES('A','sandbox-a','running','2020-01-01T00:00:00','2020-01-01T00:00:00')"
     )
     # B: 新鲜 running(刚刚,sqlite datetime('now') 同格式)→ 不应动
     conn.execute(
-        "INSERT INTO knowledge_jobs(id,status,updated_at,created_at) VALUES('B','running',datetime('now'),datetime('now'))"
+        "INSERT INTO knowledge_jobs(id,sandbox_id,status,updated_at,created_at) VALUES('B','sandbox-b','running',datetime('now'),datetime('now'))"
     )
     # C: 老的 completed → 不是 running,不应动
     conn.execute(
-        "INSERT INTO knowledge_jobs(id,status,updated_at,created_at) VALUES('C','completed','2020-01-01T00:00:00','2020-01-01T00:00:00')"
+        "INSERT INTO knowledge_jobs(id,sandbox_id,status,updated_at,created_at) VALUES('C','sandbox-c','completed','2020-01-01T00:00:00','2020-01-01T00:00:00')"
     )
     conn.commit()
     return _DbLike(conn)

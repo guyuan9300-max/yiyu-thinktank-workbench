@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app.main import create_app
+from app.services.sandbox_registry import ensure_organization_sandbox_for_session, set_active_sandbox_setting
 
 
 NOW = "2026-05-03T10:00:00"
@@ -127,6 +128,28 @@ def _insert_strategic_context(client: TestClient, client_id: str) -> None:
 
 def test_brain_dashboard_excludes_private_tasks_and_internal_smoke_clients(tmp_path: Path) -> None:
     client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org-dashboard-test",
+        organization_name="战略陪伴测试组织",
+    )
+    set_active_sandbox_setting(
+        db,
+        "cloud_session_user",
+        json.dumps(
+            {
+                "id": "dashboard-user",
+                "organizationId": "org-dashboard-test",
+                "email": "dashboard@example.com",
+                "fullName": "战略陪伴测试成员",
+                "primaryRole": "employee",
+                "accountStatus": "approved",
+                "membershipStatus": "approved",
+            },
+            ensure_ascii=False,
+        ),
+    )
     client_id = create_test_client_record(client)
     _insert_internal_smoke_client(client)
 

@@ -20,7 +20,7 @@ def make_client(tmp_path, monkeypatch) -> TestClient:
     return TestClient(create_app())
 
 
-def test_cloud_registration_without_organization_name_uses_default_name(tmp_path, monkeypatch):
+def test_cloud_registration_without_invite_requires_organization_name(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
 
     register = client.post(
@@ -32,18 +32,8 @@ def test_cloud_registration_without_organization_name_uses_default_name(tmp_path
             "password": "Password123!",
         },
     )
-    assert register.status_code == 200, register.text
-    owner_headers = {"Authorization": f"Bearer {register.json()['accessToken']}"}
-
-    membership = client.get("/api/v1/me/org-membership", headers=owner_headers)
-    assert membership.status_code == 200, membership.text
-    assert membership.json()["organizationName"] == "本地优先拥有者 的组织"
-    assert membership.json()["membershipStatus"] == "none"
-    assert membership.json()["hasOrganization"] is False
-
-    blocked_tasks = client.get("/api/v1/tasks", headers=owner_headers)
-    assert blocked_tasks.status_code == 403
-    assert "组织身份尚未确认" in blocked_tasks.text
+    assert register.status_code == 409, register.text
+    assert "成员加入请填写组织或部门邀请码" in register.text
 
 
 def test_cloud_registration_uses_local_organization_name(tmp_path, monkeypatch):
@@ -65,8 +55,9 @@ def test_cloud_registration_uses_local_organization_name(tmp_path, monkeypatch):
     membership = client.get("/api/v1/me/org-membership", headers=headers)
     assert membership.status_code == 200, membership.text
     assert membership.json()["organizationName"] == "本机初始化组织"
-    assert membership.json()["membershipStatus"] == "none"
-    assert membership.json()["hasOrganization"] is False
+    assert membership.json()["membershipStatus"] == "approved"
+    assert membership.json()["hasOrganization"] is True
+    assert response.json()["user"]["primaryRole"] == "admin"
 
 
 def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path, monkeypatch):
@@ -79,6 +70,7 @@ def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path,
             "phone": "13800138103",
             "fullName": "已有云账号",
             "password": "Password123!",
+            "organizationName": "已有云账号的组织",
         },
     )
     assert first.status_code == 200, first.text
@@ -89,7 +81,8 @@ def test_cloud_registration_conflicting_email_returns_binding_guidance(tmp_path,
             "email": "existing-cloud@example.com",
             "phone": "13800138104",
             "fullName": "重复云账号",
-            "password": "Password123!",
+            "password": "OtherPassword123!",
+            "organizationName": "重复账号的新组织",
         },
     )
     assert conflict.status_code == 409

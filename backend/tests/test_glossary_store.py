@@ -28,6 +28,7 @@ CREATE TABLE client_glossary (
     definition TEXT NOT NULL DEFAULT '',
     aliases_json TEXT NOT NULL DEFAULT '[]',
     category TEXT NOT NULL DEFAULT '',
+    evidence_tier TEXT NOT NULL DEFAULT 'E3',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

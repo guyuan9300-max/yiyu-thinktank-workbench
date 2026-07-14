@@ -340,6 +340,8 @@ def collect_client_fact_bundle(
     client_id: str,
     *,
     viewer_user_id: str = "",
+    sandbox_id: str = "",
+    organization_id: str = "",
     person_limit: int = 60,
     time_anchor_limit: int = 30,
     money_anchor_limit: int = 20,
@@ -357,9 +359,24 @@ def collect_client_fact_bundle(
       - 数据中心层 (字典 / 承诺 / 风险 / 事件线 / 事实卡片) 全员共享, 不按 user 过滤 —
         这是众包共建的精髓层, 大家拼拼图。
     """
+    sandbox_id = str(sandbox_id or "").strip()
+    organization_id = str(organization_id or "").strip()
     client_row = db.fetchone(
-        "SELECT id, name, alias FROM clients WHERE id = ?",
-        (client_id,),
+        """
+        SELECT c.id, c.name, c.alias
+        FROM clients c
+        LEFT JOIN sandboxes s ON s.id = c.sandbox_id
+        WHERE c.id = ?
+          AND (? = '' OR COALESCE(c.sandbox_id, '') = ?)
+          AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+        """,
+        (
+            client_id,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+        ),
     )
     if not client_row:
         raise ValueError(f"client not found: {client_id}")
@@ -375,9 +392,15 @@ def collect_client_fact_bundle(
     time_anchors = _collect_time_anchors(db, client_id, time_anchor_limit)
     money_anchors = _collect_money_anchors(db, client_id, money_anchor_limit)
     atomic_by_attr = _collect_atomic_facts(db, client_id, atomic_fact_limit)
-    event_lines = _collect_event_lines(db, client_id, event_line_limit)
-    activities = _collect_activities(db, client_id, activity_limit)
-    tasks = _collect_tasks(db, client_id, task_limit)
+    event_lines = _collect_event_lines(
+        db, client_id, event_line_limit, sandbox_id, organization_id
+    )
+    activities = _collect_activities(
+        db, client_id, activity_limit, sandbox_id, organization_id
+    )
+    tasks = _collect_tasks(
+        db, client_id, task_limit, sandbox_id, organization_id
+    )
     documents, total_docs = _collect_documents(db, client_id, document_limit)
     profile = _collect_profile(db, client_id)
     health = _compute_health(
@@ -1076,16 +1099,31 @@ def _collect_atomic_facts(db: Database, client_id: str, limit: int) -> dict[str,
     return grouped
 
 
-def _collect_event_lines(db: Database, client_id: str, limit: int) -> list[EventLineFact]:
+def _collect_event_lines(
+    db: Database,
+    client_id: str,
+    limit: int,
+    sandbox_id: str = "",
+    organization_id: str = "",
+) -> list[EventLineFact]:
     rows = db.fetchall(
         """
         SELECT id, name, kind, status, stage, summary, intent, current_blocker,
                recent_decision, next_step, evidence_count, owner_id, updated_at
         FROM event_lines
         WHERE primary_client_id = ?
+          AND (? = '' OR COALESCE(sandbox_id, '') = ?)
+          AND (? = '' OR COALESCE(organization_id, '') = ?)
         ORDER BY updated_at DESC LIMIT ?
         """,
-        (client_id, limit),
+        (
+            client_id,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+            limit,
+        ),
     )
     return [
         EventLineFact(
@@ -1107,7 +1145,13 @@ def _collect_event_lines(db: Database, client_id: str, limit: int) -> list[Event
     ]
 
 
-def _collect_activities(db: Database, client_id: str, limit: int) -> list[ActivityFact]:
+def _collect_activities(
+    db: Database,
+    client_id: str,
+    limit: int,
+    sandbox_id: str = "",
+    organization_id: str = "",
+) -> list[ActivityFact]:
     rows = db.fetchall(
         """
         SELECT a.id, a.event_line_id, e.name AS event_line_name,
@@ -1117,9 +1161,18 @@ def _collect_activities(db: Database, client_id: str, limit: int) -> list[Activi
         FROM event_line_activities a
         JOIN event_lines e ON e.id = a.event_line_id
         WHERE e.primary_client_id = ?
+          AND (? = '' OR COALESCE(e.sandbox_id, '') = ?)
+          AND (? = '' OR COALESCE(e.organization_id, '') = ?)
         ORDER BY a.happened_at DESC LIMIT ?
         """,
-        (client_id, limit),
+        (
+            client_id,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+            limit,
+        ),
     )
     out: list[ActivityFact] = []
     for r in rows:
@@ -1144,8 +1197,30 @@ def _collect_activities(db: Database, client_id: str, limit: int) -> list[Activi
     return out
 
 
-def _collect_tasks(db: Database, client_id: str, limit: int) -> list[TaskFact]:
-    client_row = db.fetchone("SELECT name FROM clients WHERE id = ?", (client_id,))
+def _collect_tasks(
+    db: Database,
+    client_id: str,
+    limit: int,
+    sandbox_id: str = "",
+    organization_id: str = "",
+) -> list[TaskFact]:
+    client_row = db.fetchone(
+        """
+        SELECT c.name
+        FROM clients c
+        LEFT JOIN sandboxes s ON s.id = c.sandbox_id
+        WHERE c.id = ?
+          AND (? = '' OR COALESCE(c.sandbox_id, '') = ?)
+          AND (? = '' OR COALESCE(s.organization_id, '') = ?)
+        """,
+        (
+            client_id,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+        ),
+    )
     client_name = str(client_row["name"]) if client_row else ""
     name_like = f"%{client_name}%" if client_name else "%"
     rows = db.fetchall(
@@ -1156,13 +1231,35 @@ def _collect_tasks(db: Database, client_id: str, limit: int) -> list[TaskFact]:
                t.next_action, t.current_blocker, t.recent_decision,
                t.updated_at
         FROM tasks t
-        WHERE t.client_id = ?
-           OR EXISTS (SELECT 1 FROM event_lines e
-                    WHERE e.primary_client_id = ? AND t.event_line_id = e.id)
-           OR t.title LIKE ?
+        WHERE (
+                t.client_id = ?
+                OR EXISTS (
+                    SELECT 1 FROM event_lines e
+                    WHERE e.primary_client_id = ?
+                      AND t.event_line_id = e.id
+                      AND (? = '' OR COALESCE(e.sandbox_id, '') = ?)
+                      AND (? = '' OR COALESCE(e.organization_id, '') = ?)
+                )
+                OR t.title LIKE ?
+              )
+          AND (? = '' OR COALESCE(t.sandbox_id, '') = ?)
+          AND (? = '' OR COALESCE(t.organization_id, '') = ?)
         ORDER BY t.updated_at DESC LIMIT ?
         """,
-        (client_id, client_id, name_like, limit),
+        (
+            client_id,
+            client_id,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+            name_like,
+            sandbox_id,
+            sandbox_id,
+            organization_id,
+            organization_id,
+            limit,
+        ),
     )
     return [
         TaskFact(

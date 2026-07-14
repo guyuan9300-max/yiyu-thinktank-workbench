@@ -5,6 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = Path(__file__).resolve().parent / "test_link_import_data"
@@ -15,7 +16,7 @@ os.environ["YIYU_CLOUD_JIANING_PASSWORD"] = "Simulate123!"
 os.environ["YIYU_CLOUD_YISHUO_PASSWORD"] = "Simulate123!"
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from app.main import create_app  # noqa: E402
+from app.main import DEFAULT_ORG_ID, create_app, now_iso  # noqa: E402
 
 BILI_URL = "https://www.bilibili.com/video/BV1xx411c7mD"
 
@@ -38,6 +39,17 @@ def teardown_function():
 
 
 def auth_headers(client: TestClient, email: str = "admin@yiyu-system.com", password: str = "Admin123!") -> dict[str, str]:
+    timestamp = now_iso()
+    client.app.state.app_state.db.executemany(
+        """
+        INSERT OR IGNORE INTO clients(id, organization_id, name, alias, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        [
+            ("client_demo", DEFAULT_ORG_ID, "本组织", "本组织", timestamp, timestamp),
+            ("client_org", DEFAULT_ORG_ID, "本组织", "本组织", timestamp, timestamp),
+        ],
+    )
     response = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['accessToken']}"}
@@ -75,13 +87,25 @@ def test_create_list_and_idempotent_resubmit():
     assert items[0]["id"] == record["id"]
 
 
-def test_rejects_non_http_url():
+@pytest.mark.parametrize(
+    "source_url",
+    [
+        "javascript:alert(1)",
+        "http://www.bilibili.com/video/BV1xx411c7mD",
+        "https://evil.example/?next=https://www.bilibili.com/video/BV1xx411c7mD",
+        "https://www.bilibili.com.evil.example/video/BV1xx411c7mD",
+        "https://www.bilibili.com@127.0.0.1/private",
+        "https://127.0.0.1/private",
+        "https://mp.weixin.qq.com/not-an-article",
+    ],
+)
+def test_rejects_unsafe_or_unsupported_url(source_url: str):
     app = create_app()
     client = TestClient(app)
     headers = auth_headers(client)
     response = client.post(
         "/api/v1/link-import-requests",
-        json={"url": "javascript:alert(1)"},
+        json={"url": source_url},
         headers=headers,
     )
     assert response.status_code == 422

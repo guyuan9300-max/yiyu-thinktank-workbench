@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -9,6 +10,11 @@ from typing import Any
 from uuid import uuid4
 
 from app.db import Database, from_json, to_json
+from app.services.async_job_scope import (
+    AsyncJobScopeError,
+    load_persisted_job_workspace_context,
+    resolve_client_workspace_context,
+)
 from app.models import (
     AnalysisAuthorityLevel,
     AnalysisBackfillMainChainJobRecord,
@@ -232,7 +238,9 @@ def _build_snapshot_hash(value: Any) -> str:
 
 def _build_canary_exclusion_scope(db: Database) -> dict[str, set[str]]:
     canary_job_ids: set[str] = set()
-    for row in db.fetchall("SELECT id, feature_flags_json FROM analysis_jobs"):
+    # Cross-sandbox administrative scan: every row carries its persisted scope;
+    # only opaque job ids are used to exclude canary output from migration metrics.
+    for row in db.fetchall("SELECT id, sandbox_id, feature_flags_json FROM analysis_jobs"):
         feature_flags = _parse_json_dict(row["feature_flags_json"])
         if bool(feature_flags.get(_MAIN_CHAIN_CANARY_FEATURE_FLAG)):
             canary_job_ids.add(str(row["id"]))
@@ -441,40 +449,89 @@ def _upsert_stage_run(db: Database, stage: AnalysisJobStageRunRecord) -> None:
     )
 
 
-def _upsert_analysis_job(db: Database, job: AnalysisJobRecord) -> None:
-    _upsert(
-        db,
-        "analysis_jobs",
-        {
-            "id": job.id,
-            "job_type": job.jobType,
-            "client_id": job.clientId,
-            "scope_type": job.scopeType,
-            "scope_id": job.scopeId,
-            "status": job.status,
-            "priority": job.priority,
-            "trigger_type": job.triggerType,
-            "intent_profile": job.intentProfile,
-            "question": job.question,
-            "source_snapshot": job.sourceSnapshot,
-            "source_snapshot_hash": job.sourceSnapshotHash,
-            "dedupe_key": job.dedupeKey,
-            "feature_flags_json": to_json(job.featureFlags),
-            "progress": job.progress,
-            "stage_label": job.stageLabel,
-            "run_log_id": job.runLogId,
-            "error": job.error,
-            "locked_by": job.lockedBy,
-            "locked_at": job.lockedAt,
-            "lock_expires_at": job.lockExpiresAt,
-            "attempt_count": job.attemptCount,
-            "last_error": job.lastError,
-            "created_at": job.createdAt,
-            "updated_at": job.updatedAt,
-            "started_at": job.startedAt,
-            "finished_at": job.finishedAt,
-        },
-    )
+def _upsert_analysis_job(
+    db: Database,
+    job: AnalysisJobRecord,
+    *,
+    expected_sandbox_id: str | None = None,
+) -> None:
+    payload = {
+        "id": job.id,
+        "job_type": job.jobType,
+        "client_id": job.clientId,
+        "sandbox_id": job.sandboxId,
+        "scope_type": job.scopeType,
+        "scope_id": job.scopeId,
+        "status": job.status,
+        "priority": job.priority,
+        "trigger_type": job.triggerType,
+        "intent_profile": job.intentProfile,
+        "question": job.question,
+        "source_snapshot": job.sourceSnapshot,
+        "source_snapshot_hash": job.sourceSnapshotHash,
+        "dedupe_key": job.dedupeKey,
+        "feature_flags_json": to_json(job.featureFlags),
+        "progress": job.progress,
+        "stage_label": job.stageLabel,
+        "run_log_id": job.runLogId,
+        "error": job.error,
+        "locked_by": job.lockedBy,
+        "locked_at": job.lockedAt,
+        "lock_expires_at": job.lockExpiresAt,
+        "attempt_count": job.attemptCount,
+        "last_error": job.lastError,
+        "created_at": job.createdAt,
+        "updated_at": job.updatedAt,
+        "started_at": job.startedAt,
+        "finished_at": job.finishedAt,
+    }
+    if expected_sandbox_id is None:
+        _upsert(db, "analysis_jobs", payload)
+        return
+
+    normalized_expected = str(expected_sandbox_id or "").strip()
+    if str(job.sandboxId or "").strip() != normalized_expected:
+        raise AsyncJobScopeError(
+            "job_scope_changed",
+            client_id=job.clientId,
+            sandbox_id=normalized_expected,
+        )
+
+    def _update_scoped(conn: Any) -> None:
+        existing = conn.execute(
+            "SELECT client_id, sandbox_id FROM analysis_jobs WHERE id = ? LIMIT 1",
+            (job.id,),
+        ).fetchone()
+        if existing is None:
+            raise AsyncJobScopeError(
+                "job_not_found",
+                client_id=job.clientId,
+                sandbox_id=normalized_expected,
+            )
+        if str(existing["sandbox_id"] or "").strip() != normalized_expected:
+            raise AsyncJobScopeError(
+                "job_scope_changed",
+                client_id=str(existing["client_id"] or job.clientId),
+                sandbox_id=normalized_expected,
+            )
+        update_columns = [column for column in payload if column != "id"]
+        cursor = conn.execute(
+            f"""
+            UPDATE analysis_jobs
+               SET {", ".join(f"{column} = ?" for column in update_columns)}
+             WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+            """,
+            tuple(payload[column] for column in update_columns)
+            + (job.id, normalized_expected),
+        )
+        if cursor.rowcount != 1:
+            raise AsyncJobScopeError(
+                "job_scope_changed",
+                client_id=job.clientId,
+                sandbox_id=normalized_expected,
+            )
+
+    db.run_in_transaction(_update_scoped)
 
 
 def _upsert_runtime_run_log(db: Database, record: RuntimeRunLogRecord) -> None:
@@ -800,6 +857,7 @@ def _build_analysis_job_record(row: Any) -> AnalysisJobRecord:
         id=str(row["id"]),
         jobType=str(row["job_type"]),
         clientId=str(row["client_id"]),
+        sandboxId=str(row["sandbox_id"]) if row["sandbox_id"] else None,
         scopeType=str(row["scope_type"]),
         scopeId=str(row["scope_id"]),
         status=str(row["status"]),
@@ -1046,17 +1104,22 @@ def _build_judgment_version_record(row: Any) -> JudgmentVersionRecord:
 
 
 def list_analysis_jobs(db: Database, client_id: str, limit: int = 12) -> list[AnalysisJobRecord]:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     return [
         _build_analysis_job_record(row)
         for row in db.fetchall(
-            "SELECT * FROM analysis_jobs WHERE client_id = ? ORDER BY updated_at DESC LIMIT ?",
-            (client_id, limit),
+            "SELECT * FROM analysis_jobs WHERE sandbox_id = ? AND client_id = ? ORDER BY updated_at DESC LIMIT ?",
+            (workspace_context.sandbox_id, client_id, limit),
         )
     ]
 
 
 def get_analysis_job(db: Database, job_id: str) -> AnalysisJobRecord | None:
-    row = db.fetchone("SELECT * FROM analysis_jobs WHERE id = ?", (job_id,))
+    # The worker must load the persisted sandbox_id before it can validate/bind scope.
+    row = db.fetchone(
+        "SELECT analysis_jobs.*, sandbox_id AS persisted_sandbox_id FROM analysis_jobs WHERE id = ?",
+        (job_id,),
+    )
     return _build_analysis_job_record(row) if row else None
 
 
@@ -1546,6 +1609,7 @@ def _build_related_refs(workspace: ClientWorkspaceResponse) -> dict[str, list[st
 
 
 def _build_analysis_center_summary(db: Database, client_id: str) -> AnalysisCenterSummaryRecord:
+    workspace_context = resolve_client_workspace_context(db, client_id)
     # P1-3 性能: 把原来 8 个独立 COUNT 合并成 1 个 UNION ALL, 250MB db 时减少 7-8x 扫表
     # 每个 SELECT 返回 (key, count) 形式, Python 里 dict 化用.
     count_rows = db.fetchall(
@@ -1564,16 +1628,16 @@ def _build_analysis_center_summary(db: Database, client_id: str) -> AnalysisCent
         SELECT 'judg_approved', COUNT(*) FROM judgment_versions
           WHERE client_id = ? AND status = 'approved'
         UNION ALL
-        SELECT 'analysis_job', COUNT(*) FROM analysis_jobs WHERE client_id = ?
+        SELECT 'analysis_job', COUNT(*) FROM analysis_jobs WHERE client_id = ? AND sandbox_id = ?
         """,
-        (client_id,) * 7,
+        (*((client_id,) * 7), workspace_context.sandbox_id),
     )
     counts = {row["k"]: int(row["n"] or 0) for row in count_rows}
 
     # latest_* 仍单查 (各表 ORDER BY DESC LIMIT 1 走索引, 单次很快, 没必要合并)
     latest_job = db.fetchone(
-        "SELECT status, stage_label FROM analysis_jobs WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
-        (client_id,),
+        "SELECT status, stage_label FROM analysis_jobs WHERE client_id = ? AND sandbox_id = ? ORDER BY updated_at DESC LIMIT 1",
+        (client_id, workspace_context.sandbox_id),
     )
     latest_context_pack = db.fetchone(
         "SELECT updated_at FROM context_packs WHERE client_id = ? ORDER BY updated_at DESC LIMIT 1",
@@ -2979,6 +3043,8 @@ def create_analysis_job(
     *,
     source_snapshot: dict[str, Any] | None = None,
 ) -> AnalysisJobRecord:
+    workspace_context = resolve_client_workspace_context(db, payload.clientId)
+    sandbox_id = workspace_context.sandbox_id
     scope_type = payload.scopeType or "client"
     now = _now_iso()
     snapshot_payload = source_snapshot or {
@@ -2989,6 +3055,7 @@ def create_analysis_job(
     source_snapshot_hash = _build_snapshot_hash(snapshot_payload)
     dedupe_key = _stable_id(
         "analysisdedupe",
+        sandbox_id,
         payload.jobType,
         payload.clientId,
         scope_type,
@@ -3001,11 +3068,11 @@ def create_analysis_job(
         """
         SELECT *
         FROM analysis_jobs
-        WHERE dedupe_key = ? AND status IN ('queued', 'running')
+        WHERE sandbox_id = ? AND dedupe_key = ? AND status IN ('queued', 'running')
         ORDER BY updated_at DESC
         LIMIT 1
         """,
-        (dedupe_key,),
+        (sandbox_id, dedupe_key),
     )
     if existing_row:
         return _build_analysis_job_record(existing_row)
@@ -3015,6 +3082,7 @@ def create_analysis_job(
         id=job_id,
         jobType=payload.jobType,
         clientId=payload.clientId,
+        sandboxId=sandbox_id,
         scopeType=scope_type,
         scopeId=payload.scopeId,
         status="queued",
@@ -3040,7 +3108,23 @@ def create_analysis_job(
         startedAt=None,
         finishedAt=None,
     )
-    _upsert_analysis_job(db, job)
+    try:
+        _upsert_analysis_job(db, job)
+    except sqlite3.IntegrityError:
+        # 两个 enqueue 可能同时通过前置查询；唯一索引负责最终仲裁。
+        existing_row = db.fetchone(
+            """
+            SELECT *
+            FROM analysis_jobs
+            WHERE sandbox_id = ? AND dedupe_key = ? AND status IN ('queued', 'running')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (sandbox_id, dedupe_key),
+        )
+        if existing_row:
+            return _build_analysis_job_record(existing_row)
+        raise
     queued_stage = AnalysisJobStageRunRecord(
         id=_stable_id("analysisstage", job.id, "queued"),
         jobId=job.id,
@@ -3223,16 +3307,18 @@ def queue_main_chain_backfill(
     queued_jobs = 0
     skipped_jobs = 0
     for candidate in candidates[:batch_size]:
+        workspace_context = resolve_client_workspace_context(db, candidate.clientId)
         existing_active = db.fetchone(
             """
             SELECT id
             FROM analysis_jobs
-            WHERE client_id = ? AND scope_type = ? AND scope_id = ? AND trigger_type = ? AND intent_profile = ?
+            WHERE sandbox_id = ? AND client_id = ? AND scope_type = ? AND scope_id = ? AND trigger_type = ? AND intent_profile = ?
               AND status IN ('queued', 'running')
             ORDER BY updated_at DESC
             LIMIT 1
             """,
             (
+                workspace_context.sandbox_id,
                 candidate.clientId,
                 candidate.scopeType,
                 candidate.scopeId,
@@ -3277,19 +3363,54 @@ def queue_main_chain_backfill(
 
 def recover_stale_analysis_jobs(db: Database) -> None:
     now = _now_iso()
-    db.execute(
+    stale_rows = db.fetchall(
         """
-        UPDATE analysis_jobs
-        SET status = 'queued',
-            stage_label = '检测到中断，已重新入队',
-            locked_by = NULL,
-            locked_at = NULL,
-            lock_expires_at = NULL,
-            updated_at = ?
+        SELECT id, client_id, sandbox_id
+        FROM analysis_jobs
         WHERE status IN ('running', 'preparing', 'extracting', 'clustering', 'comparing', 'drafting')
-        """,
-        (now,),
+        """
     )
+    for row in stale_rows:
+        job_id = str(row["id"] or "")
+        client_id = str(row["client_id"] or "")
+        sandbox_id = str(row["sandbox_id"] or "")
+        try:
+            load_persisted_job_workspace_context(
+                db,
+                sandbox_id=sandbox_id,
+                client_id=client_id,
+            )
+        except AsyncJobScopeError as error:
+            db.execute(
+                """
+                UPDATE analysis_jobs
+                SET status = 'failed',
+                    stage_label = '异步任务工作空间无效',
+                    error = ?,
+                    last_error = ?,
+                    locked_by = NULL,
+                    locked_at = NULL,
+                    lock_expires_at = NULL,
+                    finished_at = ?,
+                    updated_at = ?
+                WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                """,
+                (str(error), str(error), now, now, job_id, sandbox_id),
+            )
+            continue
+        db.execute(
+            """
+            UPDATE analysis_jobs
+            SET status = 'queued',
+                stage_label = '检测到中断，已重新入队',
+                locked_by = NULL,
+                locked_at = NULL,
+                lock_expires_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND sandbox_id = ?
+            """,
+            (now, job_id, sandbox_id),
+        )
 
 
 def claim_next_analysis_job(db: Database, worker_id: str) -> AnalysisJobRecord | None:
@@ -3301,7 +3422,7 @@ def claim_next_analysis_job(db: Database, worker_id: str) -> AnalysisJobRecord |
     bucket_queries = {
         "interactive": (
             """
-            SELECT *
+            SELECT analysis_jobs.*, sandbox_id AS persisted_sandbox_id
             FROM analysis_jobs
             WHERE status = 'queued'
               AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?)
@@ -3320,7 +3441,7 @@ def claim_next_analysis_job(db: Database, worker_id: str) -> AnalysisJobRecord |
         ),
         "system": (
             """
-            SELECT *
+            SELECT analysis_jobs.*, sandbox_id AS persisted_sandbox_id
             FROM analysis_jobs
             WHERE status = 'queued'
               AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?)
@@ -3339,7 +3460,7 @@ def claim_next_analysis_job(db: Database, worker_id: str) -> AnalysisJobRecord |
         ),
         "backfill": (
             """
-            SELECT *
+            SELECT analysis_jobs.*, sandbox_id AS persisted_sandbox_id
             FROM analysis_jobs
             WHERE status = 'queued'
               AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?)
@@ -3374,10 +3495,20 @@ def claim_next_analysis_job(db: Database, worker_id: str) -> AnalysisJobRecord |
                     updated_at = ?,
                     started_at = COALESCE(started_at, ?)
                 WHERE id = ?
+                  AND COALESCE(sandbox_id, '') = ?
                   AND status = 'queued'
                   AND (lock_expires_at IS NULL OR lock_expires_at = '' OR lock_expires_at <= ?)
                 """,
-                (worker_id, now, lock_expires_at, now, now, str(row["id"]), now),
+                (
+                    worker_id,
+                    now,
+                    lock_expires_at,
+                    now,
+                    now,
+                    str(row["id"]),
+                    str(row["sandbox_id"] or ""),
+                    now,
+                ),
             )
             if updated.rowcount != 1:
                 return {"jobId": None, "bucket": bucket, "contention": True}
@@ -3409,14 +3540,27 @@ def fail_analysis_job(
     stage_name: str,
     error: str,
     correlation_id: str | None = None,
+    retryable: bool = True,
+    expected_sandbox_id: str | None = None,
 ) -> AnalysisJobRecord | None:
     job = get_analysis_job(db, job_id)
     if job is None:
         return None
+    effective_sandbox_id = (
+        str(job.sandboxId or "").strip()
+        if expected_sandbox_id is None
+        else str(expected_sandbox_id or "").strip()
+    )
+    if str(job.sandboxId or "").strip() != effective_sandbox_id:
+        raise AsyncJobScopeError(
+            "job_scope_changed",
+            client_id=job.clientId,
+            sandbox_id=effective_sandbox_id,
+        )
     now_dt = datetime.now().replace(microsecond=0)
     now = now_dt.isoformat()
     retry_schedule = [30, 120, 600]
-    should_retry = job.attemptCount <= len(retry_schedule)
+    should_retry = retryable and job.attemptCount <= len(retry_schedule)
     retry_delay = retry_schedule[job.attemptCount - 1] if should_retry and job.attemptCount > 0 else None
     retry_at = (now_dt + timedelta(seconds=retry_delay)).isoformat() if retry_delay is not None else None
     _upsert_stage_run(
@@ -3460,7 +3604,11 @@ def fail_analysis_job(
             "finishedAt": None if should_retry else now,
         }
     )
-    _upsert_analysis_job(db, failed_or_queued)
+    _upsert_analysis_job(
+        db,
+        failed_or_queued,
+        expected_sandbox_id=effective_sandbox_id,
+    )
     return failed_or_queued
 
 
@@ -3545,7 +3693,11 @@ def execute_analysis_job_projection(
             "startedAt": started_at,
         }
     )
-    _upsert_analysis_job(db, running_job)
+    _upsert_analysis_job(
+        db,
+        running_job,
+        expected_sandbox_id=str(job.sandboxId or ""),
+    )
     if running_job.lockedBy:
         renew_analysis_job_lock(db, running_job.id, running_job.lockedBy)
 
@@ -3660,7 +3812,11 @@ def execute_analysis_job_projection(
             "finishedAt": finished_at,
         }
     )
-    _upsert_analysis_job(db, completed_job)
+    _upsert_analysis_job(
+        db,
+        completed_job,
+        expected_sandbox_id=str(job.sandboxId or ""),
+    )
     return completed_job
 
 

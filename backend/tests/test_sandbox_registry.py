@@ -416,7 +416,7 @@ def test_matching_legacy_cloud_session_repairs_non_legacy_org_workspace(tmp_path
         db,
         organization_id="org_yiyu_default",
         organization_name="益语智库",
-        cloud_api_url="http://101.126.34.232",
+        cloud_api_url="http://192.0.2.10",
     )
     set_sandbox_setting(db, yiyu.id, "cloud_access_token", "token-yiyu")
     set_sandbox_setting(db, yiyu.id, "cloud_refresh_token", "refresh-yiyu")
@@ -667,11 +667,45 @@ def test_cloud_logout_clears_only_active_workspace_cloud_session(tmp_path: Path)
         ),
     )
     db.set_setting("local_session_user_id", local_user_id)
-    active_org = create_sandbox(db, kind="organization", name="组织 D", cloud_api_url="https://cloud-d.example.test")
-    other_org = create_sandbox(db, kind="organization", name="组织 E", cloud_api_url="https://cloud-e.example.test")
+    active_org = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_logout_d",
+        organization_name="组织 D",
+        cloud_api_url="https://cloud-d.example.test",
+        cloud_instance_id="cloud-d",
+    )
+    other_org = ensure_organization_sandbox_for_session(
+        db,
+        organization_id="org_logout_e",
+        organization_name="组织 E",
+        cloud_api_url="https://cloud-e.example.test",
+        cloud_instance_id="cloud-e",
+    )
     set_sandbox_setting(db, active_org.id, "cloud_access_token", "token-active")
     set_sandbox_setting(db, active_org.id, "cloud_refresh_token", "refresh-active")
     set_sandbox_setting(db, other_org.id, "cloud_access_token", "token-other")
+    for workspace, organization_id, organization_name in (
+        (active_org, "org_logout_d", "组织 D"),
+        (other_org, "org_logout_e", "组织 E"),
+    ):
+        set_sandbox_setting(
+            db,
+            workspace.id,
+            "cloud_session_user",
+            json.dumps(
+                {
+                    "id": f"user_{organization_id}",
+                    "organizationId": organization_id,
+                    "organizationName": organization_name,
+                    "email": f"{organization_id}@example.test",
+                    "fullName": f"{organization_name}用户",
+                    "primaryRole": "admin",
+                    "accountStatus": "approved",
+                    "membershipStatus": "approved",
+                },
+                ensure_ascii=False,
+            ),
+        )
     activate_sandbox(db, active_org.id)
     client.app.state.app_state.cloud_api_url = "https://cloud-d.example.test"
 

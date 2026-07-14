@@ -14,6 +14,7 @@ SCAN_ROOTS = [
     ROOT / "backend" / "app" / "services",
 ]
 SENSITIVE_TABLES = {
+    "analysis_jobs",
     "clients",
     "tasks",
     "event_lines",
@@ -29,6 +30,8 @@ SENSITIVE_TABLES = {
     "data_center_ingest_events",
     "exp_wall_quotes",
     "handbook_entries",
+    "knowledge_jobs",
+    "workspace_context_refresh_events",
 }
 QUERY_RE = re.compile(
     r"\b(SELECT|UPDATE|DELETE\s+FROM|INSERT\s+INTO)\b[\s\S]{0,900}?\b(?:FROM|UPDATE|INTO|JOIN)\s+("

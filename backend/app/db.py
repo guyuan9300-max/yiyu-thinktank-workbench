@@ -11,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260710  # 迁移守卫 + 沙箱任务设置恢复
+BACKEND_SCHEMA_VERSION = 20260711  # 异步任务持久沙箱归属（expand-only）
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -252,6 +252,7 @@ class Database:
                 -- 导致新装的 client 没这几张表,智能导入直接报 OperationalError: no such table.
                 CREATE TABLE IF NOT EXISTS import_story_sessions (
                     id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL DEFAULT '',
                     client_id TEXT,
                     project_event_line_id TEXT,
                     narrator_user_id TEXT NOT NULL DEFAULT '',
@@ -507,6 +508,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS knowledge_jobs (
                     id TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
+                    sandbox_id TEXT,
                     job_type TEXT NOT NULL,
                     status TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
@@ -581,6 +583,7 @@ class Database:
                     id TEXT PRIMARY KEY,
                     job_type TEXT NOT NULL,
                     client_id TEXT NOT NULL,
+                    sandbox_id TEXT,
                     scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -2668,6 +2671,42 @@ class Database:
             # workspace login/sync.
             from app.services.source_registry_store import ensure_schema as ensure_source_registry_schema
             ensure_source_registry_schema(self)
+            # 智能导入会话必须有自己的沙箱归属。历史行仅允许从已存在的
+            # parent client -> sandbox 关系回填；无 client/无有效 sandbox 的行
+            # 保持空值并被业务层 fail-closed，绝不能猜成当前活动沙箱。
+            self._ensure_column(
+                "import_story_sessions",
+                "sandbox_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )
+            self.conn.execute(
+                """
+                UPDATE import_story_sessions
+                SET sandbox_id = (
+                    SELECT clients.sandbox_id
+                    FROM clients
+                    JOIN sandboxes ON sandboxes.id = clients.sandbox_id
+                    WHERE clients.id = import_story_sessions.client_id
+                      AND COALESCE(clients.sandbox_id, '') != ''
+                    LIMIT 1
+                )
+                WHERE COALESCE(sandbox_id, '') = ''
+                  AND COALESCE(client_id, '') != ''
+                  AND (
+                      SELECT COUNT(*)
+                      FROM clients
+                      JOIN sandboxes ON sandboxes.id = clients.sandbox_id
+                      WHERE clients.id = import_story_sessions.client_id
+                        AND COALESCE(clients.sandbox_id, '') != ''
+                  ) = 1
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_import_story_sessions_sandbox
+                ON import_story_sessions(sandbox_id, status, updated_at DESC)
+                """
+            )
             # 迭代 2：v2_chunks 追加 entity_ids_json 字段（JSON 数组）
             self._ensure_column("v2_chunks", "entity_ids_json", "TEXT NOT NULL DEFAULT '[]'")
             # meeting-spine Phase0: entities(person) 身份解析锚点。
@@ -3689,6 +3728,9 @@ class Database:
                 """
                 CREATE TABLE IF NOT EXISTS idempotency_keys (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    -- 幂等身份边界: key 只在同一 workspace + org + actor 内复用
+                    sandbox_id TEXT NOT NULL DEFAULT '',
+                    organization_id TEXT NOT NULL DEFAULT '',
                     -- 客户端 (或 AI agent) 生成的唯一 key (推荐 UUID v4)
                     idempotency_key TEXT NOT NULL,
                     -- 关联请求路径 + 方法 (避免不同 endpoint 复用同 key 造成歧义)
@@ -3706,7 +3748,9 @@ class Database:
                     created_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL,               -- 24 小时窗口默认
                     -- 状态
-                    status TEXT NOT NULL DEFAULT 'completed'  -- in_progress / completed / failed
+                    status TEXT NOT NULL DEFAULT 'completed', -- in_progress / completed / failed
+                    -- 每次 claim 都换 token，防过期 claim 的迟到 complete 覆盖新请求
+                    claim_token TEXT NOT NULL DEFAULT ''
                 );
                 -- UNIQUE 防同 key+method+path 重复, 是幂等的核心保证
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_idempotency_keys_lookup
@@ -3716,6 +3760,23 @@ class Database:
                     WHERE status != 'failed';
                 CREATE INDEX IF NOT EXISTS idx_idempotency_keys_actor
                     ON idempotency_keys(actor_type, actor_id, created_at DESC);
+                """
+            )
+            # Historical databases used a global key+method+path identity.  Add the
+            # scope columns first, then replace that legacy UNIQUE index.  Historical
+            # rows retain empty scope values, so an authenticated/scoped request can
+            # never replay a response written before this migration.
+            self._ensure_column("idempotency_keys", "sandbox_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("idempotency_keys", "organization_id", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("idempotency_keys", "claim_token", "TEXT NOT NULL DEFAULT ''")
+            self.conn.execute("DROP INDEX IF EXISTS idx_idempotency_keys_lookup")
+            self.conn.execute(
+                """
+                CREATE UNIQUE INDEX idx_idempotency_keys_lookup
+                ON idempotency_keys(
+                    sandbox_id, organization_id, actor_type, actor_id,
+                    idempotency_key, request_method, request_path
+                )
                 """
             )
 
@@ -4748,6 +4809,10 @@ class Database:
             self._ensure_column("memory_facts", "valid_from", "TEXT")
             self._ensure_column("memory_facts", "valid_to", "TEXT")
             self._ensure_column("analysis_jobs", "source_snapshot_hash", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("knowledge_jobs", "sandbox_id", "TEXT")
+            self._ensure_column("analysis_jobs", "sandbox_id", "TEXT")
+            # workspace_context_refresh_events 是按需建表；存在时同样做 expand-only 加列。
+            self._ensure_column("workspace_context_refresh_events", "sandbox_id", "TEXT")
             self._ensure_column("analysis_jobs", "dedupe_key", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("analysis_jobs", "intent_profile", "TEXT NOT NULL DEFAULT 'client_overview'")
             self._ensure_column("analysis_jobs", "locked_by", "TEXT")
@@ -5149,6 +5214,30 @@ class Database:
             )
             self.conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_sandbox_queue
+                ON knowledge_jobs(sandbox_id, status, created_at ASC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_knowledge_jobs_sandbox_client
+                ON knowledge_jobs(sandbox_id, client_id, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_analysis_jobs_sandbox_queue
+                ON analysis_jobs(sandbox_id, status, priority, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_analysis_jobs_sandbox_client
+                ON analysis_jobs(sandbox_id, client_id, updated_at DESC)
+                """
+            )
+            self.conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_theme_clusters_theme_key
                 ON theme_clusters(client_id, theme_key, updated_at DESC)
                 """
@@ -5490,6 +5579,12 @@ class Database:
             # 必须最后建,因为引用了 mirror 表 + clients/event_lines/tasks 等业务表
             from app.modules.organization import VIEWS_SQL as ORGANIZATION_VIEWS_SQL
             self.conn.executescript(ORGANIZATION_VIEWS_SQL)
+
+            # 只从唯一父级 clients.sandbox_id 派生；孤儿和父级空归属保持 NULL，
+            # 已有非空值绝不覆盖。函数幂等，迁移中断后可安全重跑。
+            from app.services.async_job_scope import backfill_async_job_sandbox_ids
+
+            backfill_async_job_sandbox_ids(self)
 
             # 第一档 #1 fix: user_version 现在在所有迁移完 + 最后 commit 之前的一步写,
             # 确保中途崩不会被错标"已迁移". 这是上次 (20260518) db 损坏的根因修复.

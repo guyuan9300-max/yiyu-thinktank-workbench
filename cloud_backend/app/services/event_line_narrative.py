@@ -12,7 +12,6 @@ LLM 失败时返回 stub 兜底, 不阻塞用户。
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 import time
@@ -21,9 +20,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import httpx
-
-ARK_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-DEFAULT_LLM_MODEL = "ep-m-20260326120641-m4lf6"
 
 SYSTEM_PROMPT = """你是事件线主线还原专家。任务: 给定一条事件线的全部碎片素材
 (事件线本体 + 活动流水 + 任务 + 附件摘要 + 相关事实), 重组成一篇 5 分钟能读完的"传记"。
@@ -69,13 +65,6 @@ class TimelineNarrativeOutput:
     modelName: str
     updatedAt: str
     triggeredByDisplayName: str = ""
-
-
-def _qwen_api_key() -> str:
-    return (
-        os.getenv("ARK_API_KEY", "").strip()
-        or os.getenv("VOLCENGINE_API_KEY", "").strip()
-    )
 
 
 def _strip_to_json(raw: str) -> str:
@@ -215,12 +204,24 @@ def _build_user_prompt(ctx: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _call_llm(user_prompt: str) -> dict[str, Any]:
-    api_key = _qwen_api_key()
-    if not api_key:
-        raise RuntimeError("ARK_API_KEY / VOLCENGINE_API_KEY not set")
+def _chat_completions_endpoint(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        raise RuntimeError("organization AI base URL is missing")
+    return normalized if normalized.endswith("/chat/completions") else f"{normalized}/chat/completions"
+
+
+def _call_llm(
+    user_prompt: str,
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+) -> dict[str, Any]:
+    if not api_key or not model:
+        raise RuntimeError("organization AI configuration is incomplete")
     payload = {
-        "model": os.getenv("YIYU_NARRATIVE_MODEL", DEFAULT_LLM_MODEL),
+        "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
@@ -234,7 +235,7 @@ def _call_llm(user_prompt: str) -> dict[str, Any]:
     timeout = httpx.Timeout(timeout=None, connect=10.0, read=180.0, write=20.0, pool=10.0)
     with httpx.Client(timeout=timeout) as client:
         response = client.post(
-            f"{ARK_BASE_URL}/chat/completions",
+            _chat_completions_endpoint(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -269,17 +270,25 @@ def regenerate_timeline_narrative(
     triggered_by_user_id: str | None,
     triggered_by_display_name: str,
     trigger: str = "manual",
+    ai_api_key: str | None = None,
+    ai_base_url: str = "",
+    ai_model: str = "",
 ) -> TimelineNarrativeOutput:
     ctx = _collect_context(db, organization_id, event_line_id)
 
-    if not _qwen_api_key():
-        out = _stub_output(event_line_id, "LLM 未配置 (ARK_API_KEY)")
+    if not ai_api_key or not ai_base_url or not ai_model:
+        out = _stub_output(event_line_id, "当前组织 AI 配置未提供")
         _write_version(db, organization_id, out, triggered_by_user_id, triggered_by_display_name, trigger)
         return out
 
     user_prompt = _build_user_prompt(ctx)
     try:
-        parsed = _call_llm(user_prompt)
+        parsed = _call_llm(
+            user_prompt,
+            api_key=ai_api_key,
+            base_url=ai_base_url,
+            model=ai_model,
+        )
     except Exception as exc:
         out = _stub_output(event_line_id, f"LLM 调用失败: {type(exc).__name__}: {exc}")
         _write_version(db, organization_id, out, triggered_by_user_id, triggered_by_display_name, trigger)
@@ -322,7 +331,7 @@ def regenerate_timeline_narrative(
         nodes=nodes,
         overallConfidence=confidence,
         generator="ai_doubao",
-        modelName=os.getenv("YIYU_NARRATIVE_MODEL", DEFAULT_LLM_MODEL),
+        modelName=ai_model,
         updatedAt=time.strftime("%Y-%m-%dT%H:%M:%S"),
         triggeredByDisplayName=triggered_by_display_name or "",
     )

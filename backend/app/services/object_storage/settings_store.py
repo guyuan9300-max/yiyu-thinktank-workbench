@@ -1,7 +1,8 @@
 """对象存储配置读写。
 
-旧版只有全局 ``object_storage_settings`` 单行表。沙箱化后，运行时优先
-使用 ``sandbox_settings`` 中的工作空间级缓存；旧表只作为升级/回滚兜底。
+旧版只有全局 ``object_storage_settings`` 单行表。沙箱化后，只要调用方
+已经解析出沙箱，就必须使用 ``sandbox_settings`` 中的工作空间级缓存；
+旧表仅供尚未建立沙箱身份的旧版数据库使用，不能作为沙箱缺省回退。
 """
 from __future__ import annotations
 
@@ -26,7 +27,12 @@ def _resolve_active_sandbox_id(db: Database) -> str:
 
         return get_active_sandbox_id(db)
     except Exception:
-        return ""
+        # Only a genuinely pre-sandbox database may use the legacy singleton.
+        # Resolver failures in a sandbox-aware database must fail closed.
+        legacy_row = db.fetchone("SELECT name FROM sqlite_master WHERE type='table' AND name='sandboxes'")
+        if not legacy_row:
+            return ""
+        raise
 
 
 def _sandbox_settings_available(db: Database) -> bool:
@@ -142,6 +148,10 @@ def get_object_storage_settings(
     sandbox_record = _get_sandbox_record(db, resolved_sandbox_id, redact_credentials=redact_credentials)
     if sandbox_record is not None:
         return sandbox_record
+    if resolved_sandbox_id:
+        # A missing scoped record is an empty configuration, never permission to
+        # borrow the legacy singleton (which may belong to another organization).
+        return ObjectStorageSettingsRecord()
 
     row = db.fetchone("SELECT * FROM object_storage_settings WHERE id = 1")
     if not row:
@@ -162,12 +172,20 @@ def save_object_storage_settings(
     sandbox_id: str | None = None,
     managed_by_cloud: bool = False,
     configured_by: str | None = None,
+    preserve_credentials_if_empty: bool = False,
 ) -> ObjectStorageSettingsRecord:
     resolved_sandbox_id = sandbox_id if sandbox_id is not None else _resolve_active_sandbox_id(db)
-    if resolved_sandbox_id and _sandbox_settings_available(db):
+    if resolved_sandbox_id:
+        if not _sandbox_settings_available(db):
+            raise RuntimeError("sandbox_settings table is required for scoped object storage")
+        next_credentials = dict(payload.credentials or {})
+        if preserve_credentials_if_empty and not any(str(value).strip() for value in next_credentials.values()):
+            existing = _get_sandbox_record(db, resolved_sandbox_id, redact_credentials=False)
+            if existing is not None and existing.hasCredentials:
+                next_credentials = dict(existing.credentials)
         record_payload = {
             "provider": payload.provider,
-            "credentials": dict(payload.credentials or {}),
+            "credentials": next_credentials,
             "extraConfig": dict(payload.extraConfig or {}),
             "enabled": bool(payload.enabled),
             "updatedAt": now_iso or _now_fallback(),
@@ -211,4 +229,4 @@ def save_object_storage_settings(
             now_iso,
         ),
     )
-    return get_object_storage_settings(db)
+    return get_object_storage_settings(db, sandbox_id="")
