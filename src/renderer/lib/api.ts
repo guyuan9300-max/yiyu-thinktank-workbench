@@ -2556,6 +2556,12 @@ export async function disableEmployee(id: string) {
   });
 }
 
+export async function enableEmployee(id: string) {
+  return request<EmployeeRecord>(`/api/v1/admin/employees/${id}/enable`, {
+    method: 'POST',
+  });
+}
+
 export async function updateEmployeeRole(id: string, payload: EmployeeRolePayload) {
   return request<EmployeeRecord>(`/api/v1/admin/employees/${id}/role`, {
     method: 'PATCH',

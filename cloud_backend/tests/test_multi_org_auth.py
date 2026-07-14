@@ -266,3 +266,109 @@ def test_admin_reset_password_syncs_member_and_identity_hashes_for_any_org(tmp_p
     assert login.status_code == 200, login.text
     assert login.json()["user"]["id"] == "emp_reset_member"
     assert login.json()["user"]["organizationId"] == organization_id
+
+
+def test_admin_can_reenable_disabled_member_without_losing_identity(tmp_path, monkeypatch) -> None:
+    client = _make_client(tmp_path, monkeypatch)
+
+    owner = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "enable-owner@example.com",
+            "fullName": "启用测试管理员",
+            "phone": "13800138015",
+            "password": "Password123!",
+            "organizationName": "启用测试组织",
+        },
+    )
+    assert owner.status_code == 200, owner.text
+    owner_payload = owner.json()
+    organization_id = owner_payload["user"]["organizationId"]
+    headers = _auth_header(owner_payload["accessToken"])
+
+    db = client.app.state.app_state.db
+    timestamp = now_iso()
+    password_hash = hash_password("MemberPassword123!")
+    db.execute(
+        """
+        INSERT INTO cloud_identities(id, email, phone_number, full_name, password_hash, last_login_at, created_at, updated_at)
+        VALUES(?, ?, ?, ?, ?, NULL, ?, ?)
+        """,
+        (
+            "ident_enable_member",
+            "enable-member@example.com",
+            "+8613800138016",
+            "可重新启用成员",
+            password_hash,
+            timestamp,
+            timestamp,
+        ),
+    )
+    db.execute(
+        """
+        INSERT INTO employee_accounts(
+            id, identity_id, organization_id, email, phone_number, full_name, password_hash, primary_role,
+            account_status, membership_status, approved_at, approved_by, department_id, department_name,
+            job_title, visibility_scope, created_at, updated_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, 'employee', 'approved', 'approved', ?, ?, ?, ?, ?, 'self', ?, ?)
+        """,
+        (
+            "emp_enable_member",
+            "ident_enable_member",
+            organization_id,
+            "enable-member@example.com",
+            "+8613800138016",
+            "可重新启用成员",
+            password_hash,
+            timestamp,
+            owner_payload["user"]["id"],
+            "dept_enable_test",
+            "测试部门",
+            "项目成员",
+            timestamp,
+            timestamp,
+        ),
+    )
+
+    disabled = client.post(
+        "/api/v1/admin/employees/emp_enable_member/disable",
+        headers=headers,
+    )
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["accountStatus"] == "disabled"
+    assert disabled.json()["disabledAt"]
+
+    blocked_login = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "enable-member@example.com", "password": "MemberPassword123!"},
+    )
+    assert blocked_login.status_code == 403
+    assert "账号已停用" in blocked_login.text
+
+    enabled = client.post(
+        "/api/v1/admin/employees/emp_enable_member/enable",
+        headers=headers,
+    )
+    assert enabled.status_code == 200, enabled.text
+    enabled_user = enabled.json()
+    assert enabled_user["accountStatus"] == "approved"
+    assert enabled_user["membershipStatus"] == "approved"
+    assert enabled_user["disabledAt"] is None
+    assert enabled_user["departmentId"] == "dept_enable_test"
+    assert enabled_user["departmentName"] == "测试部门"
+    assert enabled_user["jobTitle"] == "项目成员"
+
+    relogin = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "enable-member@example.com", "password": "MemberPassword123!"},
+    )
+    assert relogin.status_code == 200, relogin.text
+    assert relogin.json()["user"]["id"] == "emp_enable_member"
+    assert relogin.json()["user"]["organizationId"] == organization_id
+
+    repeated = client.post(
+        "/api/v1/admin/employees/emp_enable_member/enable",
+        headers=headers,
+    )
+    assert repeated.status_code == 400
+    assert "不是停用状态" in repeated.text

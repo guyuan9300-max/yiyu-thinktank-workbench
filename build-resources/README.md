@@ -5,10 +5,11 @@
 当前正式官网分发包需要：
 
 - `icon.icns`
+- `icon.ico`
 - `entitlements.mac.plist`
 - `entitlements.mac.inherit.plist`
 
-生成方式：
+两个平台图标统一生成：
 
 - `python3 scripts/generate-mac-icon.py`
 

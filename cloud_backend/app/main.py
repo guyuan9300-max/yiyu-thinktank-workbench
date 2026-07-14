@@ -15875,6 +15875,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=401, detail="邮箱/手机号或密码错误")
         member_rows = _member_rows_for_identity(state, str(identity["id"]))
         if not member_rows:
+            disabled_membership = state.db.fetchone(
+                "SELECT id FROM employee_accounts WHERE identity_id = ? AND account_status = 'disabled' LIMIT 1",
+                (str(identity["id"]),),
+            )
+            if disabled_membership:
+                raise HTTPException(status_code=403, detail="账号已停用")
             raise HTTPException(status_code=403, detail="当前账号尚未加入任何组织")
         if len(member_rows) > 1:
             return _organization_selection_response(identity)
@@ -21447,6 +21453,30 @@ def create_app() -> FastAPI:
             (timestamp, timestamp, employee_id, current_user.organizationId),
         )
         _log_audit(state, "disable_employee", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
+        return _employee_record(_get_org_user_or_404(state, current_user.organizationId, employee_id))
+
+    @app.post("/api/v1/admin/employees/{employee_id}/enable", response_model=EmployeeRecord)
+    def enable_employee(employee_id: str, current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_admin(app, authorization))) -> EmployeeRecord:
+        row = _get_org_user_or_404(state, current_user.organizationId, employee_id)
+        if str(row["account_status"] or "") != "disabled":
+            raise HTTPException(status_code=400, detail="该账号当前不是停用状态")
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE employee_accounts
+               SET account_status = 'approved',
+                   membership_status = 'approved',
+                   disabled_at = NULL,
+                   rejected_reason = NULL,
+                   membership_rejected_reason = NULL,
+                   approved_at = COALESCE(approved_at, ?),
+                   approved_by = COALESCE(approved_by, ?),
+                   updated_at = ?
+             WHERE id = ? AND organization_id = ?
+            """,
+            (timestamp, current_user.id, timestamp, employee_id, current_user.organizationId),
+        )
+        _log_audit(state, "enable_employee", actor_user_id=current_user.id, target_user_id=employee_id, detail={})
         return _employee_record(_get_org_user_or_404(state, current_user.organizationId, employee_id))
 
     @app.post("/api/v1/admin/employees/{employee_id}/reset-password")

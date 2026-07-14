@@ -316,6 +316,7 @@ import {
   previewEventLineMerge,
   mergeEventLines,
   disableEmployee,
+  enableEmployee,
   extractMeeting,
   getAgentWorklogs,
   getAuthState,
@@ -31696,6 +31697,19 @@ export default function App() {
           setEmployeeReviewBusyId(null);
         }
       };
+      const handleEnable = async (id: string) => {
+        if (!window.confirm('确定要重新启用该账号吗？原有部门、身份和历史数据将继续保留。')) return;
+        setEmployeeReviewBusyId(id);
+        try {
+          await enableEmployee(id);
+          flash('success', '已重新启用该账号');
+          await loadEmployeeReviewBlock();
+        } catch (error) {
+          flash('error', error instanceof Error ? error.message : '操作失败');
+        } finally {
+          setEmployeeReviewBusyId(null);
+        }
+      };
       const handleResetPw = async (id: string) => {
         if (resetPwValue.length < 8) { flash('error', '新密码至少 8 位'); return; }
         setEmployeeReviewBusyId(id);
@@ -31868,7 +31882,18 @@ export default function App() {
           )}
           {disabledList.length > 0 && renderGroup('已停用', disabledList.length,
             disabledList.map((employee) => renderEmployeeRow(employee, (
-              <span className="text-[11px] text-gray-400">已停用</span>
+              canManageEmployees ? (
+                <button
+                  type="button"
+                  disabled={employeeReviewBusyId === employee.id}
+                  onClick={() => void handleEnable(employee.id)}
+                  className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+                >
+                  {employeeReviewBusyId === employee.id ? '启用中…' : '重新启用'}
+                </button>
+              ) : (
+                <span className="text-[11px] text-gray-400">已停用</span>
+              )
             )))
           )}
           {activeList.length > 0 && renderGroup('在职员工', activeList.length,
