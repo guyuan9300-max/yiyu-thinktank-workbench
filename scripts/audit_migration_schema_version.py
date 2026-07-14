@@ -48,11 +48,43 @@ def default_base_ref() -> str:
     return "HEAD^"
 
 
+def remote_schema_ceiling() -> tuple[int, str] | None:
+    refs = git(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/remotes/origin",
+        check=False,
+    ).splitlines()
+    versions: list[tuple[int, str]] = []
+    for ref in refs:
+        if ref in {"origin", "origin/HEAD"}:
+            continue
+        text = git("show", f"{ref}:{DB_FILE}", check=False)
+        if not text:
+            continue
+        try:
+            versions.append((parse_version(text, f"{ref}:{DB_FILE}"), ref))
+        except RuntimeError:
+            continue
+    return max(versions, default=None)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Require a schema version bump for migration-layer changes.")
     parser.add_argument("--base", default="", help="Git base ref; defaults to PR base, main, or HEAD^.")
     args = parser.parse_args()
     base_ref = args.base.strip() or default_base_ref()
+    current_text = (ROOT / DB_FILE).read_text(encoding="utf-8")
+    current_version = parse_version(current_text, DB_FILE)
+    remote_ceiling = remote_schema_ceiling()
+    if remote_ceiling and remote_ceiling[0] > current_version:
+        print(
+            "migration schema audit failed: a remote branch contains a newer schema "
+            f"({current_version} < {remote_ceiling[0]} at {remote_ceiling[1]}). "
+            "Review and integrate that migration before packaging.",
+            file=sys.stderr,
+        )
+        return 1
     merge_base = git("merge-base", "HEAD", base_ref)
     changed = git("diff", "--name-only", merge_base, "--", *SENSITIVE_FILES).splitlines()
     working_changed = git("diff", "--name-only", "--", *SENSITIVE_FILES).splitlines()
@@ -60,9 +92,7 @@ def main() -> int:
         print(f"migration schema audit: no sensitive changes against {base_ref}")
         return 0
 
-    current_text = (ROOT / DB_FILE).read_text(encoding="utf-8")
     base_text = git("show", f"{merge_base}:{DB_FILE}")
-    current_version = parse_version(current_text, DB_FILE)
     base_version = parse_version(base_text, f"{merge_base}:{DB_FILE}")
     if current_version <= base_version:
         print(

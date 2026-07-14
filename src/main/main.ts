@@ -2869,6 +2869,26 @@ function buildBackendStartupError(prefix: string) {
   return prefix;
 }
 
+function buildBackendStartupUserMessage(error: unknown) {
+  const raw = error instanceof Error ? error.message : String(error);
+  const diagnostic = `${raw}\n${backendRecentLogLines.join('\n')}`;
+  if (/DatabaseDowngradeBlockedError|拒绝用旧版后端打开更高版本数据库/.test(diagnostic)) {
+    return [
+      '当前本机数据由更新版本的软件创建，为避免损坏原数据，本次没有继续打开。',
+      '请安装不低于该数据版本的新版软件后重试。原数据库没有被覆盖。',
+      `诊断日志：${electronLaunchLogPath}`,
+    ].join('\n');
+  }
+  if (/DatabaseMigrationGuardError|迁移备份|quick_check|数据库构造器返回后迁移契约/.test(diagnostic)) {
+    return [
+      '数据库安全检查未通过，本次没有继续写入，原数据和可用备份已保留。',
+      '请退出后重新打开软件；若仍失败，请保留日志交给技术人员处理。',
+      `诊断日志：${electronLaunchLogPath}`,
+    ].join('\n');
+  }
+  return raw;
+}
+
 // 首次冷启动 timeout 抬到 180s：backend/app/models.py 有 720+ 个 Pydantic BaseModel
 // 子类,加上 qdrant_client / fastembed 等大型库,首次 import 需要 100s+。
 // .pyc 缓存热的情况下 30-40s 就够,但保留余量避免冷启动失败。
@@ -3155,12 +3175,12 @@ app.whenReady().then(async () => {
       try {
         backendHealth = await waitForBackend(30000);
       } catch (secondError) {
-        dialog.showErrorBox('本地后端启动失败', secondError instanceof Error ? secondError.message : String(secondError));
+        dialog.showErrorBox('本地后端启动失败', buildBackendStartupUserMessage(secondError));
         requestAppQuit('backend_start_failed_after_retry', 'startup', { error: secondError instanceof Error ? secondError.message : String(secondError) });
         return;
       }
     } else {
-      dialog.showErrorBox('本地后端启动失败', firstError instanceof Error ? firstError.message : String(firstError));
+      dialog.showErrorBox('本地后端启动失败', buildBackendStartupUserMessage(firstError));
       requestAppQuit('backend_start_failed_reused_backend', 'startup', { error: firstError instanceof Error ? firstError.message : String(firstError) });
       return;
     }

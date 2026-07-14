@@ -727,3 +727,53 @@ def test_migration_lock_rejects_a_second_process(tmp_path: Path) -> None:
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_stale_backup_cleanup_failure_warns_without_blocking(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    backup_dir = guard_module._backup_dir(tmp_path)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    prefix = guard_module._backup_prefix(db_path)
+    identity = guard_module._path_identity(db_path)
+    stale_path = backup_dir / f"{prefix}20260701T000000-{identity}.db"
+    current_path = backup_dir / f"{prefix}20260702T000000-{identity}.db"
+    stale_path.write_bytes(b"stale")
+    current_path.write_bytes(b"current")
+    original_unlink = Path.unlink
+
+    def deny_stale_unlink(path: Path, *args, **kwargs):
+        if path == stale_path:
+            raise PermissionError("injected stale cleanup denial")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_stale_unlink)
+    with pytest.warns(RuntimeWarning, match="不阻断启动"):
+        guard_module._prune_migration_backups(
+            tmp_path,
+            db_path,
+            keep_backups=1,
+        )
+    assert current_path.exists()
+
+
+def test_successful_migration_marker_cleanup_failure_does_not_block(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "app.db"
+    _create_current_database(db_path)
+    with closing(sqlite3.connect(db_path)) as conn, conn:
+        conn.execute(f"PRAGMA user_version={db_module.BACKEND_SCHEMA_VERSION - 1}")
+    original_unlink = Path.unlink
+
+    def deny_marker_unlink(path: Path, *args, **kwargs):
+        if "migration-attempt" in path.name:
+            raise PermissionError("injected marker cleanup denial")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_marker_unlink)
+    with pytest.warns(RuntimeWarning, match="不阻断启动"):
+        db, _ = guard_module.open_database_with_migration_guard(db_path, data_dir=tmp_path)
+    assert db.conn.execute("PRAGMA user_version").fetchone()[0] == db_module.BACKEND_SCHEMA_VERSION
+    db.conn.close()

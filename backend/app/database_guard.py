@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import time
+import warnings
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -96,6 +97,12 @@ def _harden_existing_sqlite_files(db_path: Path) -> None:
             private_path.chmod(_PRIVATE_FILE_MODE)
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            warnings.warn(
+                f"数据库文件权限收紧失败（不阻断启动）: {private_path}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 def _connect_read_only(db_path: Path) -> sqlite3.Connection:
@@ -227,9 +234,27 @@ def _fsync_directory(path: Path) -> None:
     except OSError:
         return
     try:
-        os.fsync(directory_fd)
+        try:
+            os.fsync(directory_fd)
+        except OSError as exc:
+            warnings.warn(
+                f"数据库目录刷盘失败（文件已单独刷盘，不阻断启动）: {path}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     finally:
         os.close(directory_fd)
+
+
+def _remove_auxiliary_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        warnings.warn(
+            f"迁移附属文件清理失败（不阻断启动）: {path}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _sha256_file(path: Path) -> str:
@@ -327,7 +352,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         path.chmod(_PRIVATE_FILE_MODE)
         _fsync_directory(path.parent)
     finally:
-        temp_path.unlink(missing_ok=True)
+        _remove_auxiliary_file(temp_path)
 
 
 def _create_consistent_sqlite_backup(db_path: Path, backup_path: Path) -> str:
@@ -359,7 +384,7 @@ def _create_consistent_sqlite_backup(db_path: Path, backup_path: Path) -> str:
             destination.close()
         if source is not None:
             source.close()
-        temp_path.unlink(missing_ok=True)
+        _remove_auxiliary_file(temp_path)
 
 
 def create_pre_migration_backup(
@@ -501,9 +526,9 @@ def rollback_database_from_backup(
         _fsync_directory(db_path.parent)
         raise
     finally:
-        staged_path.unlink(missing_ok=True)
+        _remove_auxiliary_file(staged_path)
     for _, quarantine in quarantined:
-        quarantine.unlink(missing_ok=True)
+        _remove_auxiliary_file(quarantine)
     _fsync_directory(db_path.parent)
 
 
@@ -552,7 +577,7 @@ def _recover_interrupted_migration(data_dir: Path, db_path: Path) -> None:
         except DatabaseMigrationGuardError:
             pass
         else:
-            marker_path.unlink()
+            _remove_auxiliary_file(marker_path)
             _fsync_directory(marker_path.parent)
             return
     rollback_database_from_backup(
@@ -560,7 +585,7 @@ def _recover_interrupted_migration(data_dir: Path, db_path: Path) -> None:
         backup_path,
         expected_sha256=expected_digest,
     )
-    marker_path.unlink()
+    _remove_auxiliary_file(marker_path)
     _fsync_directory(marker_path.parent)
 
 
@@ -582,20 +607,28 @@ def _prune_migration_backups(
             active_backup_name = str(_read_json_object(marker_path).get("backup_file") or "")
         except DatabaseMigrationGuardError:
             return
-    backups = sorted(
-        backup_dir.glob(f"{_backup_prefix(db_path)}*-{_path_identity(db_path)}.db"),
-        key=lambda item: (item.stat().st_mtime_ns, item.name),
-        reverse=True,
-    )
+    try:
+        backups = sorted(
+            backup_dir.glob(f"{_backup_prefix(db_path)}*-{_path_identity(db_path)}.db"),
+            key=lambda item: (item.stat().st_mtime_ns, item.name),
+            reverse=True,
+        )
+    except OSError as exc:
+        warnings.warn(
+            f"迁移旧备份扫描失败（不阻断启动）: {backup_dir}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
     retained = 0
     for backup_path in backups:
         if backup_path.name == active_backup_name or retained < keep_backups:
             retained += 1
             continue
-        backup_path.unlink(missing_ok=True)
-        backup_path.with_suffix(".db.json").unlink(missing_ok=True)
+        _remove_auxiliary_file(backup_path)
+        _remove_auxiliary_file(backup_path.with_suffix(".db.json"))
         for suffix in ("-wal", "-shm", "-journal"):
-            backup_path.with_name(f"{backup_path.name}{suffix}").unlink(missing_ok=True)
+            _remove_auxiliary_file(backup_path.with_name(f"{backup_path.name}{suffix}"))
     _fsync_directory(backup_dir)
 
 
@@ -677,7 +710,7 @@ def _open_database_with_migration_guard_locked(
                 backup_path,
                 expected_sha256=expected_digest,
             )
-            marker_path.unlink(missing_ok=True)
+            _remove_auxiliary_file(marker_path)
             _fsync_directory(marker_path.parent)
         _prune_migration_backups(
             resolved_data_dir,
@@ -686,7 +719,7 @@ def _open_database_with_migration_guard_locked(
         )
         raise
 
-    marker_path.unlink(missing_ok=True)
+    _remove_auxiliary_file(marker_path)
     _fsync_directory(marker_path.parent)
     _prune_migration_backups(
         resolved_data_dir,
