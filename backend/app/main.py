@@ -40199,6 +40199,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid employee payload")
         return EmployeeRecord(**response)
 
+    @app.post("/api/v1/admin/employees/{employee_id}/enable", response_model=EmployeeRecord)
+    def enable_employee(employee_id: str) -> EmployeeRecord:
+        response = cloud_request("POST", f"/api/v1/admin/employees/{employee_id}/enable")
+        if not isinstance(response, dict):
+            raise HTTPException(status_code=502, detail="Invalid employee payload")
+        return EmployeeRecord(**response)
+
     @app.post("/api/v1/admin/employees/{employee_id}/reset-password")
     def admin_reset_password(employee_id: str, payload: dict) -> dict:
         response = cloud_request("POST", f"/api/v1/admin/employees/{employee_id}/reset-password", json_body=payload)

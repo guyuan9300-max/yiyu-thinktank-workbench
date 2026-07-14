@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_RESOURCES = PROJECT_ROOT / "build-resources"
 ICONSET_DIR = BUILD_RESOURCES / "icon.iconset"
 ICON_PATH = BUILD_RESOURCES / "icon.icns"
+WINDOWS_ICON_PATH = BUILD_RESOURCES / "icon.ico"
 SOURCE_ICON_PATH = BUILD_RESOURCES / "app-logo-ai.png"
 BASE_SIZE = 1024
 
@@ -59,12 +60,21 @@ def build_icns() -> None:
     )
 
 
+def build_windows_ico(image: Image.Image) -> None:
+    image.save(
+        WINDOWS_ICON_PATH,
+        format="ICO",
+        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+    )
+
+
 def main() -> None:
     BUILD_RESOURCES.mkdir(parents=True, exist_ok=True)
     base_icon = build_base_icon()
     write_iconset(base_icon)
     build_icns()
-    print(f"generated {ICON_PATH}")
+    build_windows_ico(base_icon)
+    print(f"generated {ICON_PATH} and {WINDOWS_ICON_PATH}")
 
 
 if __name__ == "__main__":

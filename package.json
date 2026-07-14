@@ -136,6 +136,7 @@
       ]
     },
     "win": {
+      "icon": "build-resources/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -159,7 +160,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "益语智库自用平台 V2.0"
+    "shortcutName": "益语智库AI"
     },
     "publish": {
       "provider": "generic",
