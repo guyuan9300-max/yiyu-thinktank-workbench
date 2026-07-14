@@ -7487,6 +7487,55 @@ function WritingSkillEditorModal({
   );
 }
 
+type TaskOverlayMutationPayload = Partial<TaskMutationPayload> & {
+  status?: string;
+  progressStatus?: string;
+};
+
+function buildTaskMutationOverlayPatch(payload: TaskOverlayMutationPayload): Partial<Task> {
+  const patch: Partial<Task> = {};
+  const directFields: Array<[keyof TaskOverlayMutationPayload, keyof Task]> = [
+    ['title', 'title'],
+    ['desc', 'desc'],
+    ['priority', 'priority'],
+    ['listId', 'listId'],
+    ['startDate', 'startDate'],
+    ['dueDate', 'dueDate'],
+    ['deadlineAt', 'deadlineAt'],
+    ['scheduledStartAt', 'scheduledStartAt'],
+    ['scheduledEndAt', 'scheduledEndAt'],
+    ['completedAt', 'completedAt'],
+    ['durationMinutes', 'durationMinutes'],
+    ['scopeMode', 'scopeMode'],
+    ['clientId', 'clientId'],
+    ['eventLineId', 'eventLineId'],
+    ['projectModuleId', 'projectModuleId'],
+    ['projectFlowId', 'projectFlowId'],
+    ['ddl', 'ddl'],
+    ['ownerId', 'ownerId'],
+    ['ownerName', 'ownerName'],
+    ['businessCategory', 'businessCategory'],
+    ['currentBlocker', 'currentBlocker'],
+    ['nextAction', 'nextAction'],
+    ['recentDecision', 'recentDecision'],
+    ['evidenceCount', 'evidenceCount'],
+  ];
+  directFields.forEach(([source, target]) => {
+    if (Object.prototype.hasOwnProperty.call(payload, source)) {
+      (patch as Record<string, unknown>)[target] = payload[source] as unknown;
+    }
+  });
+  const nextStatus = payload.progressStatus || payload.status;
+  if (nextStatus) patch.status = nextStatus as Task['status'];
+  if (payload.scopeMode === 'PERSONAL_ONLY') {
+    patch.clientId = null;
+    patch.eventLineId = null;
+    patch.projectModuleId = null;
+    patch.projectFlowId = null;
+  }
+  return patch;
+}
+
 export default function App() {
   const initialTodayState = getTodayCalendarState();
   const initialNavigationStateRef = useRef<InitialNavigationState | null>(null);
@@ -7995,6 +8044,90 @@ export default function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const sharedTasks = useMemo(() => filterSharedTasks(tasks), [tasks]);
   const optimisticTasksRef = useRef<Map<string, { task: Task; addedAt: number; fromLocalDraft: boolean; sandboxId: string }>>(new Map());
+  const taskMutationOverlaysRef = useRef<Map<string, {
+    taskId: string;
+    sandboxId: string;
+    mutationId: string;
+    patch: Partial<Task>;
+    previousTask: Task;
+    localMutationSeq?: number;
+  }>>(new Map());
+  const taskMutationSessionRef = useRef(
+    globalThis.crypto?.randomUUID?.() || `task-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+  );
+  const taskMutationOrderRef = useRef(0);
+  const currentTaskSandboxId = () => activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
+  const updateTaskWithOverlay = async (
+    task: Task,
+    payload: TaskOverlayMutationPayload,
+    options?: { sandboxId?: string | null },
+  ): Promise<Task> => {
+    const sandboxId = (options?.sandboxId || currentTaskSandboxId() || '').trim();
+    const mutationOrder = taskMutationOrderRef.current + 1;
+    taskMutationOrderRef.current = mutationOrder;
+    const mutationSession = taskMutationSessionRef.current;
+    const mutationId = `task-mutation-${mutationSession}-${mutationOrder}`;
+    const key = `${sandboxId}:${task.id}`;
+    const existingOverlay = taskMutationOverlaysRef.current.get(key);
+    const patch = {
+      ...(existingOverlay?.patch || {}),
+      ...buildTaskMutationOverlayPatch(payload),
+    };
+    taskMutationOverlaysRef.current.set(key, {
+      taskId: task.id,
+      sandboxId,
+      mutationId,
+      patch,
+      previousTask: existingOverlay?.previousTask || task,
+    });
+    if (!sandboxId || sandboxId === currentTaskSandboxId()) {
+      setTasks((prev) => prev.map((item) => (
+        item.id === task.id ? { ...item, ...patch, syncStatus: 'syncing' } : item
+      )));
+    }
+    try {
+      const result = await updateTask(task.id, payload, {
+        sandboxId,
+        clientMutationId: mutationId,
+        clientMutationSession: mutationSession,
+        clientMutationOrder: mutationOrder,
+      });
+      const currentOverlay = taskMutationOverlaysRef.current.get(key);
+      if (currentOverlay?.mutationId === mutationId) {
+        if (result.syncStatus === 'synced') {
+          taskMutationOverlaysRef.current.delete(key);
+        } else {
+          taskMutationOverlaysRef.current.set(key, {
+            ...currentOverlay,
+            localMutationSeq: result.localMutationSeq,
+          });
+        }
+        if (!sandboxId || sandboxId === currentTaskSandboxId()) {
+          setTasks((prev) => prev.map((item) => (
+            item.id === task.id
+              ? {
+                  ...item,
+                  ...result,
+                  ...(result.syncStatus === 'synced' ? {} : currentOverlay.patch),
+                }
+              : item
+          )));
+        }
+      }
+      return result;
+    } catch (error) {
+      const currentOverlay = taskMutationOverlaysRef.current.get(key);
+      if (currentOverlay?.mutationId === mutationId) {
+        taskMutationOverlaysRef.current.delete(key);
+        if (!sandboxId || sandboxId === currentTaskSandboxId()) {
+          setTasks((prev) => prev.map((item) => (
+            item.id === task.id ? currentOverlay.previousTask : item
+          )));
+        }
+      }
+      throw error;
+    }
+  };
   const taskContextBriefPreloadRef = useRef<(taskItems: Task[], options?: { silent?: boolean }) => Promise<void>>(async () => undefined);
   const openStrategicTaskDraftRef = useRef<(payload: StrategicTaskDraftRequest) => void>(() => undefined);
   const promoteUnifiedTodoRef = useRef<(todo: import('./lib/api').UnifiedTodo) => void>(() => undefined);
@@ -8722,6 +8855,7 @@ export default function App() {
 
   const resetBusinessWorkspaceTransientState = () => {
     optimisticTasksRef.current.clear();
+    taskMutationOverlaysRef.current.clear();
     reviewDirtyTaskIdsRef.current.clear();
     reviewDraftRevisionRef.current = {};
     reviewLoadAbortControllerRef.current?.abort();
@@ -10586,7 +10720,26 @@ export default function App() {
         optimisticTasksRef.current.delete(key);
       }
     }
-    setTasks([...pendingOptimistic, ...response.tasks]);
+    const mutationSafeTasks = response.tasks.map((task: Task) => {
+      const key = `${currentSandboxId}:${task.id}`;
+      const overlay = taskMutationOverlaysRef.current.get(key);
+      if (!overlay) return task;
+      const serverMutationSeq = Number(task.localMutationSeq || 0);
+      if (
+        overlay.localMutationSeq !== undefined
+        && serverMutationSeq >= overlay.localMutationSeq
+        && task.syncStatus === 'synced'
+      ) {
+        taskMutationOverlaysRef.current.delete(key);
+        return task;
+      }
+      return {
+        ...task,
+        ...overlay.patch,
+        syncStatus: task.syncStatus || 'syncing',
+      };
+    });
+    setTasks([...pendingOptimistic, ...mutationSafeTasks]);
     setTaskLists(response.lists);
     setTaskTags([]);
     void taskContextBriefPreloadRef.current(
@@ -14740,8 +14893,6 @@ export default function App() {
       };
     };
 
-    const currentTaskSandboxId = () => activeSandboxIdRef.current || workspacesState?.activeSandboxId || '';
-
     const upsertLocalTask = (
       nextTask: Task,
       replaceId?: string | null,
@@ -15063,9 +15214,11 @@ export default function App() {
 
       void (async () => {
         try {
-          const savedTask = draftSnapshot.id
-            ? await updateTask(draftSnapshot.id, payload, { sandboxId: saveSandboxId })
-            : await createTask(payload, { sandboxId: saveSandboxId });
+          const savedTask = draftSnapshot.id && existingTaskSnapshot
+            ? await updateTaskWithOverlay(existingTaskSnapshot, payload, { sandboxId: saveSandboxId })
+            : draftSnapshot.id
+              ? await updateTask(draftSnapshot.id, payload, { sandboxId: saveSandboxId })
+              : await createTask(payload, { sandboxId: saveSandboxId });
           const saveWorkspaceStillVisible = !saveSandboxId || saveSandboxId === currentTaskSandboxId();
           upsertLocalTask(savedTask, draftSnapshot.id ? draftSnapshot.id : optimisticTaskId, {
             sandboxId: saveSandboxId,
@@ -16304,10 +16457,17 @@ export default function App() {
       const nextDeadlineAt = shouldMoveSchedule ? (task.deadlineAt || null) : (nextParts.date || nextDate);
       const nextDueValue = nextDeadlineAt || nextScheduleStart || nextDate;
       const nextDueLabel = formatTaskDueLabel(nextDueValue);
-      const previousTaskSnapshot = task;
-      const applyLocalTaskPatch = (nextTask: Task) => {
+      const mutationPayload = {
+        scheduledStartAt: nextScheduleStart,
+        scheduledEndAt: nextScheduleEnd,
+        deadlineAt: nextDeadlineAt,
+        startDate: nextScheduleStart,
+        dueDate: nextDueValue,
+        durationMinutes: scheduleDuration,
+        ddl: nextDueLabel,
+      };
+      const applyEditorTime = (nextTask: Partial<Task>) => {
         const nextTaskDueParts = splitTaskDueDateTime(nextTask.scheduledStartAt || nextTask.dueDate);
-        setTasks((prev) => prev.map((item) => (item.id === nextTask.id ? { ...item, ...nextTask } : item)));
         setEditingTask((prev) => (prev.id === nextTask.id
           ? {
               ...prev,
@@ -16318,34 +16478,17 @@ export default function App() {
           : prev));
       };
 
-      applyLocalTaskPatch({
-        ...task,
-        scheduledStartAt: nextScheduleStart,
-        scheduledEndAt: nextScheduleEnd,
-        deadlineAt: nextDeadlineAt,
-        startDate: nextScheduleStart,
-        dueDate: nextDueValue,
-        durationMinutes: scheduleDuration,
-        ddl: nextDueLabel,
-      });
+      applyEditorTime({ id: task.id, ...mutationPayload });
 
       if (!options?.preserveCalendarViewport) {
         focusCalendarOnTaskDate(nextDueValue, nextDueLabel);
       }
       try {
-        const updatedTask = await updateTask(task.id, {
-          scheduledStartAt: nextScheduleStart,
-          scheduledEndAt: nextScheduleEnd,
-          deadlineAt: nextDeadlineAt,
-          startDate: nextScheduleStart,
-          dueDate: nextDueValue,
-          durationMinutes: scheduleDuration,
-          ddl: nextDueLabel,
-        });
-        applyLocalTaskPatch(updatedTask);
+        const updatedTask = await updateTaskWithOverlay(task, mutationPayload);
+        applyEditorTime(updatedTask);
         flash('success', `任务已调整到 ${nextDueLabel}。`);
       } catch (error) {
-        applyLocalTaskPatch(previousTaskSnapshot);
+        applyEditorTime(task);
         flash('error', error instanceof Error ? error.message : '任务调整失败');
         // 让调用方（日历拖拽 handler）知道失败：否则它们会在 await 之后照常切换视口/日期，
         // 用户看到的是任务回到原位但日历视口已经飞走，以为任务消失了。
@@ -16370,11 +16513,10 @@ export default function App() {
             );
           })()
         : null;
-      await updateTask(task.id, {
+      await updateTaskWithOverlay(task, {
         durationMinutes: safeDuration,
         scheduledEndAt: nextScheduledEndAt,
       });
-      await loadTaskBlock();
       flash('success', `任务时长已调整为 ${safeDuration} 分钟。`);
     };
 
@@ -32732,12 +32874,18 @@ export default function App() {
       const end = new Date(new Date(nextStart).getTime() + durationMin * 60_000);
       const pad = (n: number) => String(n).padStart(2, '0');
       const nextEnd = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T${pad(end.getHours())}:${pad(end.getMinutes())}`;
-      setTasks((prev) => prev.map((x) => (x.id === taskId ? { ...x, scheduledStartAt: nextStart, scheduledEndAt: nextEnd } : x)));
-      try { await updateTask(taskId, { scheduledStartAt: nextStart, scheduledEndAt: nextEnd }); } catch { /* 自愈 */ }
+      try {
+        await updateTaskWithOverlay(task, { scheduledStartAt: nextStart, scheduledEndAt: nextEnd });
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '任务调整失败');
+      }
     } else {
       // 纯截止/待办:改截止日为那天
-      setTasks((prev) => prev.map((x) => (x.id === taskId ? { ...x, dueDate: dateIso, deadlineAt: dateIso } : x)));
-      try { await updateTask(taskId, { dueDate: dateIso, deadlineAt: dateIso }); } catch { /* 自愈 */ }
+      try {
+        await updateTaskWithOverlay(task, { dueDate: dateIso, deadlineAt: dateIso });
+      } catch (error) {
+        flash('error', error instanceof Error ? error.message : '任务调整失败');
+      }
     }
   };
   if (miniMode) {

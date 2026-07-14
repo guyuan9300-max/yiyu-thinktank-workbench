@@ -5229,11 +5229,22 @@ export async function deleteTaskTag(id: string) {
 
 type WorkspaceScopedMutationOptions = {
   sandboxId?: string | null;
+  clientMutationId?: string | null;
+  clientMutationSession?: string | null;
+  clientMutationOrder?: number | null;
 };
 
 function workspaceScopedHeaders(options?: WorkspaceScopedMutationOptions): HeadersInit | undefined {
   const sandboxId = (options?.sandboxId || '').trim();
-  return sandboxId ? { 'X-Yiyu-Sandbox-Id': sandboxId } : undefined;
+  const clientMutationId = (options?.clientMutationId || '').trim();
+  const clientMutationSession = (options?.clientMutationSession || '').trim();
+  const clientMutationOrder = Math.trunc(options?.clientMutationOrder || 0);
+  const headers: Record<string, string> = {};
+  if (sandboxId) headers['X-Yiyu-Sandbox-Id'] = sandboxId;
+  if (clientMutationId) headers['X-Yiyu-Client-Mutation-Id'] = clientMutationId;
+  if (clientMutationSession) headers['X-Yiyu-Client-Mutation-Session'] = clientMutationSession;
+  if (clientMutationOrder > 0) headers['X-Yiyu-Client-Mutation-Order'] = String(clientMutationOrder);
+  return Object.keys(headers).length > 0 ? headers : undefined;
 }
 
 export async function createTask(payload: TaskMutationPayload, options?: WorkspaceScopedMutationOptions) {

@@ -260,6 +260,18 @@ class Database:
                     FOREIGN KEY(user_id) REFERENCES employee_accounts(id) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS task_client_mutation_watermarks (
+                    organization_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    mutation_source TEXT NOT NULL,
+                    latest_mutation_seq INTEGER NOT NULL DEFAULT 0,
+                    client_mutation_id TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (organization_id, task_id, mutation_source),
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                );
+
                 -- P7：client_related_users 关联表
                 --   模仿 task_collaborators 的 (主表, user_id, order_index) 结构。
                 --   ACL 入口：creator_id 或 user_id ∈ client_related_users 才能在 GET /clients 看到。

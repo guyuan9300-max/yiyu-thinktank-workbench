@@ -6605,30 +6605,77 @@ def _queue_feishu_sync_outbox(
     payload: dict[str, object],
     status_value: str = "queued",
     last_error: str = "",
+    conn=None,
 ) -> None:
     timestamp = now_iso()
-    state.db.execute(
-        """
-        INSERT INTO org_feishu_sync_outbox(
-            id, organization_id, local_type, local_id, remote_type, action, payload_json,
-            sync_status, attempt_count, last_error, due_at, processed_at, created_at, updated_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?)
-        """,
-        (
-            new_id("feishu_outbox"),
-            organization_id,
-            local_type,
-            local_id,
-            remote_type,
-            action,
-            to_json(payload),
-            status_value,
-            last_error,
-            timestamp,
-            timestamp,
-            timestamp,
-        ),
-    )
+    payload_json = to_json(payload)
+
+    def _coalesce(conn) -> None:
+        rows = conn.execute(
+            """
+            SELECT id
+            FROM org_feishu_sync_outbox
+            WHERE organization_id = ?
+              AND local_type = ?
+              AND local_id = ?
+              AND remote_type = ?
+              AND action = ?
+              AND sync_status IN ('queued', 'failed')
+            ORDER BY updated_at DESC
+            """,
+            (organization_id, local_type, local_id, remote_type, action),
+        ).fetchall()
+        if rows:
+            primary_id = str(rows[0]["id"])
+            conn.execute(
+                """
+                UPDATE org_feishu_sync_outbox
+                SET payload_json = ?, sync_status = ?, attempt_count = 0,
+                    last_error = ?, due_at = ?, processed_at = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (payload_json, status_value, last_error, timestamp, timestamp, primary_id),
+            )
+            duplicate_ids = [str(row["id"]) for row in rows[1:]]
+            if duplicate_ids:
+                placeholders = ",".join("?" for _ in duplicate_ids)
+                conn.execute(
+                    f"""
+                    UPDATE org_feishu_sync_outbox
+                    SET sync_status = 'skipped', processed_at = ?, updated_at = ?,
+                        last_error = '已合并到同一任务的最新同步请求。'
+                    WHERE id IN ({placeholders})
+                    """,
+                    (timestamp, timestamp, *duplicate_ids),
+                )
+            return
+        conn.execute(
+            """
+            INSERT INTO org_feishu_sync_outbox(
+                id, organization_id, local_type, local_id, remote_type, action, payload_json,
+                sync_status, attempt_count, last_error, due_at, processed_at, created_at, updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, ?)
+            """,
+            (
+                new_id("feishu_outbox"),
+                organization_id,
+                local_type,
+                local_id,
+                remote_type,
+                action,
+                payload_json,
+                status_value,
+                last_error,
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    if conn is not None:
+        _coalesce(conn)
+    else:
+        state.db.run_in_transaction(_coalesce)
 
 
 def _feishu_api_post(*, tenant_access_token: str, path: str, body: dict[str, object]) -> dict:
@@ -10076,7 +10123,7 @@ def _feishu_sync_outbox_loop(state: AppState) -> None:
             _process_feishu_sync_outbox_once(state)
         except Exception:
             logger.exception("feishu.sync.outbox_loop_failed")
-        state.feishu_sync_stop.wait(60.0)
+        state.feishu_sync_stop.wait(2.0)
 
 
 def _upsert_org_feishu_delivery_target(
@@ -12059,11 +12106,12 @@ class FeishuNotificationService:
         immediate_changed_fields = [field for field in normalized_changed_fields if field in TASK_IMMEDIATE_FEISHU_CHANGE_FIELDS]
         deferred_changed_fields = [field for field in normalized_changed_fields if field in TASK_DEFERRED_FEISHU_CHANGE_FIELDS]
         if immediate_changed_fields:
-            self._send_task_changed_immediately(
+            self._queue_task_changed(
                 task_row=task_row,
                 current_user=current_user,
                 collaborator_ids=collaborator_ids,
                 changed_fields=normalized_changed_fields,
+                delay_seconds=0,
             )
             return
         self._queue_task_changed(
@@ -12437,11 +12485,13 @@ class FeishuNotificationService:
         current_user: SessionUser,
         collaborator_ids: list[str],
         changed_fields: list[str],
+        delay_seconds: int | None = None,
     ) -> None:
         recipient_ids = self._task_recipient_ids(task_row=task_row, collaborator_ids=collaborator_ids)
         task_id = str(task_row["id"])
         timestamp = now_iso()
-        due_at = (datetime.now() + timedelta(seconds=self.task_change_merge_window_seconds)).replace(microsecond=0).isoformat()
+        merge_delay = self.task_change_merge_window_seconds if delay_seconds is None else max(0, delay_seconds)
+        due_at = (datetime.now() + timedelta(seconds=merge_delay)).replace(microsecond=0).isoformat()
         existing_rows = self.state.db.fetchall(
             """
             SELECT id, recipient_user_id FROM org_feishu_notifications
@@ -23280,6 +23330,9 @@ def create_app() -> FastAPI:
     def update_task(
         task_id: str,
         payload: TaskUpdatePayload,
+        client_mutation_source: str = Header("", alias="X-Yiyu-Client-Mutation-Source"),
+        local_mutation_seq_header: str = Header("", alias="X-Yiyu-Local-Mutation-Seq"),
+        client_mutation_id: str = Header("", alias="X-Yiyu-Client-Mutation-Id"),
         current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
     ) -> TaskRecord:
         row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
@@ -23422,43 +23475,146 @@ def create_app() -> FastAPI:
             "tag_ids_json": to_json([tag.id for tag in resolved_tags]),
             "reminder_minutes_before": payload.reminderMinutesBefore if "reminderMinutesBefore" in payload.model_fields_set else (int(row["reminder_minutes_before"]) if row["reminder_minutes_before"] is not None else None),
         }
-        state.db.execute(
-            """
-            UPDATE tasks
-            SET title = ?, description = ?, priority = ?, list_id = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, reminder_minutes_before = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                merged["title"],
-                merged["description"],
-                merged["priority"],
-                merged["list_id"],
-                merged["deadline_at"],
-                merged["scheduled_start_at"],
-                merged["scheduled_end_at"],
-                merged["completed_at"],
-                merged["start_date"],
-                merged["due_date"],
-                merged["duration_minutes"],
-                merged["scope_mode"],
-                merged["client_id"],
-                merged["event_line_id"],
-                merged["project_module_id"],
-                merged["project_flow_id"],
-                merged["progress_status"],
-                merged["owner_id"],
-                merged["business_category"],
-                merged["current_blocker"],
-                merged["next_action"],
-                merged["recent_decision"],
-                merged["evidence_count"],
-                merged["tags_json"],
-                merged["tag_ids_json"],
-                merged["reminder_minutes_before"],
-                update_timestamp,
-                task_id,
-            ),
+        mutation_source = str(client_mutation_source or "").strip()[:160]
+        mutation_id = str(client_mutation_id or "").strip()[:160]
+        try:
+            local_mutation_seq = int(str(local_mutation_seq_header or "0").strip() or "0")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid task mutation sequence") from exc
+        if mutation_source and local_mutation_seq <= 0:
+            raise HTTPException(status_code=400, detail="Task mutation sequence is required")
+
+        changed_fields: list[str] = []
+        if payload.title is not None and str(merged["title"] or "") != str(row["title"] or ""):
+            changed_fields.append("title")
+        if payload.description is not None and str(merged["description"] or "") != str(row["description"] or ""):
+            changed_fields.append("description")
+        if payload.priority is not None and str(merged["priority"] or "") != str(row["priority"] or ""):
+            changed_fields.append("priority")
+        if payload.listId is not None and str(merged["list_id"] or "") != str(row["list_id"] or ""):
+            changed_fields.append("listId")
+        if "startDate" in payload.model_fields_set and merged["start_date"] != previous_start_date:
+            changed_fields.append("startDate")
+        if "dueDate" in payload.model_fields_set and merged["due_date"] != previous_due_date:
+            changed_fields.append("dueDate")
+        if "deadlineAt" in payload.model_fields_set and merged["deadline_at"] != (str(row["deadline_at"]) if row["deadline_at"] else None):
+            changed_fields.append("deadlineAt")
+        if "scheduledStartAt" in payload.model_fields_set and merged["scheduled_start_at"] != (str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None):
+            changed_fields.append("scheduledStartAt")
+        if "scheduledEndAt" in payload.model_fields_set and merged["scheduled_end_at"] != (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None):
+            changed_fields.append("scheduledEndAt")
+        if payload.durationMinutes is not None and int(merged["duration_minutes"] or 60) != previous_duration_minutes:
+            changed_fields.append("durationMinutes")
+        if status_changed:
+            changed_fields.append("progressStatus")
+        if next_owner_id != previous_owner_id:
+            changed_fields.append("ownerId")
+        if payload.collaboratorIds is not None and (
+            {item for item in next_collaborator_ids if item}
+            != {item for item in existing_collaborator_ids if item}
+        ):
+            changed_fields.append("collaboratorIds")
+        existing_feishu_task = _feishu_task_mapping_row(
+            state,
+            organization_id=current_user.organizationId,
+            task_id=task_id,
         )
+        should_queue_feishu_sync = bool(
+            existing_feishu_task
+            or set(changed_fields).intersection(TASK_FEISHU_TASK_SYNC_FIELDS)
+        )
+
+        def _apply_task_mutation(conn) -> bool:
+            if mutation_source:
+                watermark = conn.execute(
+                    """
+                    SELECT latest_mutation_seq
+                    FROM task_client_mutation_watermarks
+                    WHERE organization_id = ? AND task_id = ? AND mutation_source = ?
+                    """,
+                    (current_user.organizationId, task_id, mutation_source),
+                ).fetchone()
+                if watermark and int(watermark["latest_mutation_seq"] or 0) >= local_mutation_seq:
+                    return False
+                conn.execute(
+                    """
+                    INSERT INTO task_client_mutation_watermarks(
+                        organization_id, task_id, mutation_source, latest_mutation_seq,
+                        client_mutation_id, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(organization_id, task_id, mutation_source) DO UPDATE SET
+                        latest_mutation_seq = excluded.latest_mutation_seq,
+                        client_mutation_id = excluded.client_mutation_id,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        current_user.organizationId,
+                        task_id,
+                        mutation_source,
+                        local_mutation_seq,
+                        mutation_id,
+                        update_timestamp,
+                    ),
+                )
+            conn.execute(
+                """
+                UPDATE tasks
+                SET title = ?, description = ?, priority = ?, list_id = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, progress_status = ?, owner_id = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, reminder_minutes_before = ?, updated_at = ?
+                WHERE id = ? AND organization_id = ?
+                """,
+                (
+                    merged["title"],
+                    merged["description"],
+                    merged["priority"],
+                    merged["list_id"],
+                    merged["deadline_at"],
+                    merged["scheduled_start_at"],
+                    merged["scheduled_end_at"],
+                    merged["completed_at"],
+                    merged["start_date"],
+                    merged["due_date"],
+                    merged["duration_minutes"],
+                    merged["scope_mode"],
+                    merged["client_id"],
+                    merged["event_line_id"],
+                    merged["project_module_id"],
+                    merged["project_flow_id"],
+                    merged["progress_status"],
+                    merged["owner_id"],
+                    merged["business_category"],
+                    merged["current_blocker"],
+                    merged["next_action"],
+                    merged["recent_decision"],
+                    merged["evidence_count"],
+                    merged["tags_json"],
+                    merged["tag_ids_json"],
+                    merged["reminder_minutes_before"],
+                    update_timestamp,
+                    task_id,
+                    current_user.organizationId,
+                ),
+            )
+            if should_queue_feishu_sync:
+                _queue_feishu_sync_outbox(
+                    state,
+                    organization_id=current_user.organizationId,
+                    local_type="task",
+                    local_id=task_id,
+                    remote_type="feishu_task",
+                    action="retry_task_sync",
+                    payload={
+                        "triggerSource": "task_updated",
+                        "requestedByUserId": current_user.id,
+                        "changedFields": changed_fields,
+                    },
+                    conn=conn,
+                )
+            return True
+
+        mutation_applied = bool(state.db.run_in_transaction(_apply_task_mutation))
+        if not mutation_applied:
+            latest_row = _task_row_or_404(state, task_id, organization_id=current_user.organizationId)
+            return _task_record(state, latest_row, current_user.id)
         if payload.collaboratorIds is not None or owner_field_touched:
             state.db.execute("UPDATE tasks SET owner_id = ?, updated_at = ? WHERE id = ?", (next_owner_id, now_iso(), task_id))
             existing_rows = state.db.fetchall("SELECT user_id, inbox_status FROM task_collaborators WHERE task_id = ?", (task_id,))
@@ -23500,41 +23656,6 @@ def create_app() -> FastAPI:
             )
         updated_row = _task_row_or_404(state, task_id)
         _sync_task_org_link(state, updated_row, next_collaborator_ids)
-        changed_fields: list[str] = []
-        if payload.title is not None and str(merged["title"] or "") != str(row["title"] or ""):
-            changed_fields.append("title")
-        if payload.description is not None and str(merged["description"] or "") != str(row["description"] or ""):
-            changed_fields.append("description")
-        if payload.priority is not None and str(merged["priority"] or "") != str(row["priority"] or ""):
-            changed_fields.append("priority")
-        if payload.listId is not None and str(merged["list_id"] or "") != str(row["list_id"] or ""):
-            changed_fields.append("listId")
-        if "startDate" in payload.model_fields_set and merged["start_date"] != previous_start_date:
-            changed_fields.append("startDate")
-        if "dueDate" in payload.model_fields_set and merged["due_date"] != previous_due_date:
-            changed_fields.append("dueDate")
-        if "deadlineAt" in payload.model_fields_set and merged["deadline_at"] != (str(row["deadline_at"]) if row["deadline_at"] else None):
-            changed_fields.append("deadlineAt")
-        if "scheduledStartAt" in payload.model_fields_set and merged["scheduled_start_at"] != (str(row["scheduled_start_at"]) if row["scheduled_start_at"] else None):
-            changed_fields.append("scheduledStartAt")
-        if "scheduledEndAt" in payload.model_fields_set and merged["scheduled_end_at"] != (str(row["scheduled_end_at"]) if row["scheduled_end_at"] else None):
-            changed_fields.append("scheduledEndAt")
-        if payload.durationMinutes is not None and int(merged["duration_minutes"] or 60) != previous_duration_minutes:
-            changed_fields.append("durationMinutes")
-        if status_changed:
-            changed_fields.append("progressStatus")
-        if next_owner_id != previous_owner_id:
-            changed_fields.append("ownerId")
-        if payload.collaboratorIds is not None:
-            if {item for item in next_collaborator_ids if item} != {item for item in existing_collaborator_ids if item}:
-                changed_fields.append("collaboratorIds")
-        _auto_sync_task_feishu_task(
-            state,
-            task_row=updated_row,
-            current_user=current_user,
-            changed_fields=changed_fields,
-            trigger_source="task_updated",
-        )
         if changed_fields and next_owner_id:
             _notify_task_feishu_recipients(
                 state,

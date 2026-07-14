@@ -6,6 +6,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 TEST_DATA_DIR = Path(__file__).resolve().parent / "test_cloud_data"
@@ -506,6 +507,103 @@ def test_collaborator_can_update_task_content_and_owner():
     assert payload["title"] == "协作者已修改标题"
     assert payload["description"] == "协作者已修改描述"
     assert payload["ownerId"] == "user_jianing"
+
+
+def test_task_mutation_sequence_rejects_late_older_update():
+    app = create_app()
+    client = TestClient(app)
+    headers = auth_headers(client)
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "连续拖动只保留最后位置",
+            "description": "",
+            "priority": "normal",
+            "listId": "list-0",
+            "dueDate": "2026-07-10",
+            "collaboratorIds": [],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    newest_headers = {
+        **headers,
+        "X-Yiyu-Client-Mutation-Source": "sandbox-device-a",
+        "X-Yiyu-Local-Mutation-Seq": "2",
+        "X-Yiyu-Client-Mutation-Id": "mutation-c",
+    }
+    newest = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        json={"dueDate": "2026-07-13", "deadlineAt": "2026-07-13"},
+        headers=newest_headers,
+    )
+    assert newest.status_code == 200, newest.text
+    assert newest.json()["dueDate"] == "2026-07-13"
+
+    stale = client.patch(
+        f"/api/v1/tasks/{task_id}",
+        json={"dueDate": "2026-07-12", "deadlineAt": "2026-07-12"},
+        headers={
+            **headers,
+            "X-Yiyu-Client-Mutation-Source": "sandbox-device-a",
+            "X-Yiyu-Local-Mutation-Seq": "1",
+            "X-Yiyu-Client-Mutation-Id": "mutation-b-late",
+        },
+    )
+    assert stale.status_code == 200, stale.text
+    assert stale.json()["dueDate"] == "2026-07-13"
+    stored = app.state.app_state.db.fetchone(
+        "SELECT due_date FROM tasks WHERE id = ?",
+        (task_id,),
+    )
+    assert stored is not None
+    assert stored["due_date"] == "2026-07-13"
+
+
+def test_task_update_rolls_back_when_feishu_outbox_registration_fails(monkeypatch):
+    app = create_app()
+    client = TestClient(app)
+    headers = auth_headers(client)
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "任务更新与飞书队列原子性",
+            "description": "",
+            "priority": "normal",
+            "listId": "list-0",
+            "dueDate": "2026-07-10",
+            "collaboratorIds": [],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200, created.text
+    task_id = created.json()["id"]
+
+    def fail_outbox_registration(*args, **kwargs):
+        raise RuntimeError("simulated outbox registration failure")
+
+    monkeypatch.setattr(cloud_main, "_queue_feishu_sync_outbox", fail_outbox_registration)
+    with pytest.raises(RuntimeError, match="simulated outbox registration failure"):
+        client.patch(
+            f"/api/v1/tasks/{task_id}",
+            json={"dueDate": "2026-07-11", "deadlineAt": "2026-07-11"},
+            headers=headers,
+        )
+
+    stored = app.state.app_state.db.fetchone(
+        "SELECT due_date, deadline_at FROM tasks WHERE id = ?",
+        (task_id,),
+    )
+    assert stored is not None
+    assert stored["due_date"] == "2026-07-10"
+    assert stored["deadline_at"] == "2026-07-10"
+    outbox = app.state.app_state.db.fetchone(
+        "SELECT id FROM org_feishu_sync_outbox WHERE local_type = 'task' AND local_id = ?",
+        (task_id,),
+    )
+    assert outbox is None
 
 
 def test_event_line_clarification_fields_persist_in_cloud_backend():

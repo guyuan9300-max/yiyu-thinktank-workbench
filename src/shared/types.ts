@@ -2758,6 +2758,8 @@ export interface Task {
   backgroundReadiness?: BackgroundReadiness | null;
   linkedFactsPreview?: MemoryFact[];
   syncStatus?: 'local' | 'syncing' | 'synced' | 'pending' | 'error' | null;
+  localMutationSeq?: number;
+  syncError?: string | null;
   createdAt: string;
   updatedAt: string;
 }

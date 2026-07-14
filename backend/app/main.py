@@ -10563,10 +10563,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         path: str,
         *,
         json_body: dict | None = None,
+        extra_headers: dict[str, str] | None = None,
         timeout: float = 6.0,
     ) -> object:
         def perform_request(token: str | None):
             headers = {"Authorization": f"Bearer {token}"} if token else {}
+            headers.update(extra_headers or {})
             return _httpx_request_without_proxy(
                 method,
                 f"{context.cloud_api_url}{path}",
@@ -11644,6 +11646,9 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             memoryHints=memory_hints,
             backgroundReadiness=background_readiness,
             linkedFactsPreview=linked_facts_preview,
+            syncStatus="synced",
+            localMutationSeq=0,
+            syncError=None,
             createdAt=str(payload.get("createdAt", now_iso())),
             updatedAt=str(payload.get("updatedAt", now_iso())),
         )
@@ -13799,6 +13804,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             backgroundReadiness=background_readiness,
             linkedFactsPreview=linked_facts_preview,
             syncStatus=str(row["sync_status"]) if row["sync_status"] else None,
+            localMutationSeq=int(row["local_mutation_seq"] or 0),
+            syncError=str(row["last_sync_error"]) if row["last_sync_error"] else None,
             createdAt=str(row["created_at"]),
             updatedAt=str(row["updated_at"]),
         )
@@ -27478,7 +27485,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                    deadline_at, scheduled_start_at, scheduled_end_at, completed_at, start_date,
                    duration_minutes, scope_mode, client_id, event_line_id,
                    project_module_id, project_flow_id, owner_id, business_category,
-                   current_blocker, next_action, recent_decision, evidence_count
+                   current_blocker, next_action, recent_decision, evidence_count,
+                   local_mutation_seq, pending_base_snapshot_json
             FROM tasks
             WHERE sync_status = 'pending'
               AND (cloud_payload_json IS NOT NULL OR cloud_id IS NOT NULL)
@@ -27491,6 +27499,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         synced = 0
         for row in pending_rows:
             task_id = str(row["id"])
+            attempted_mutation_seq = int(row["local_mutation_seq"] or 0)
             cloud_id = str(row["cloud_id"] or "").strip()
             pending_action = str(row["pending_sync_action"] or "create").strip() or "create"
             if cloud_id and pending_action == "create":
@@ -27594,7 +27603,18 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                             ("Pending task update has no cloud_id yet", task_id, sync_context.sandbox_id),
                         )
                         continue
-                    response = scoped_cloud_request(sync_context, "PATCH", f"/api/v1/tasks/{cloud_id}", json_body=cloud_payload, timeout=6.0)
+                    response = scoped_cloud_request(
+                        sync_context,
+                        "PATCH",
+                        f"/api/v1/tasks/{cloud_id}",
+                        json_body=cloud_payload,
+                        extra_headers={
+                            "X-Yiyu-Client-Mutation-Source": sync_context.sandbox_id,
+                            "X-Yiyu-Local-Mutation-Seq": str(attempted_mutation_seq),
+                            "X-Yiyu-Client-Mutation-Id": f"retry-{attempted_mutation_seq}",
+                        },
+                        timeout=6.0,
+                    )
                 else:
                     # P1-11 修复: 云端 TaskCreatePayload 不接受 progressStatus 字段,
                     # 而本地 cloud_payload (l23213) 把 progressStatus 加进去了.
@@ -27632,27 +27652,50 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                     synced_cloud_id = str(response["id"])
                     synced_at = now_iso()
                     cloud_version = str(response.get("updatedAt") or response.get("createdAt") or "")
-                    state.db.execute(
-                        """
-                        UPDATE tasks
-                        SET sync_status = 'synced',
-                            cloud_id = ?,
-                            cloud_payload_json = NULL,
-                            last_synced_at = ?,
-                            last_cloud_version = ?,
-                            pending_sync_action = '',
-                            last_sync_error = ''
-                        WHERE id = ? AND COALESCE(sandbox_id, '') = ?
-                        """,
-                        (synced_cloud_id, synced_at, cloud_version, task_id, sync_context.sandbox_id),
-                    )
-                    _upsert_cloud_task_shadow_local(response, target_sandbox_id=sync_context.sandbox_id)
-                    synced += 1
+                    if pending_action == "update":
+                        finalized = _finalize_task_mutation_if_current(
+                            local_task_id=task_id,
+                            sandbox_id=sync_context.sandbox_id,
+                            mutation_seq=attempted_mutation_seq,
+                            cloud_id=synced_cloud_id,
+                            cloud_version=cloud_version,
+                        )
+                    else:
+                        state.db.execute(
+                            """
+                            UPDATE tasks
+                            SET sync_status = 'synced',
+                                cloud_id = ?,
+                                cloud_payload_json = NULL,
+                                last_synced_at = ?,
+                                last_cloud_version = ?,
+                                pending_sync_action = '',
+                                last_sync_error = '',
+                                pending_base_snapshot_json = ''
+                            WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                            """,
+                            (synced_cloud_id, synced_at, cloud_version, task_id, sync_context.sandbox_id),
+                        )
+                        finalized = True
+                    if finalized:
+                        _upsert_cloud_task_shadow_local(response, target_sandbox_id=sync_context.sandbox_id)
+                        synced += 1
             except Exception as error:
-                state.db.execute(
-                    "UPDATE tasks SET last_sync_error = ? WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
-                    (str(error)[:500], task_id, sync_context.sandbox_id),
-                )
+                error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
+                if pending_action == "update" and _task_sync_error_status(error) in {400, 403, 404, 422}:
+                    _rollback_task_mutation_if_current(
+                        local_task_id=task_id,
+                        sandbox_id=sync_context.sandbox_id,
+                        mutation_seq=attempted_mutation_seq,
+                        error_message=error_message,
+                    )
+                else:
+                    _mark_task_mutation_pending_if_current(
+                        local_task_id=task_id,
+                        sandbox_id=sync_context.sandbox_id,
+                        mutation_seq=attempted_mutation_seq,
+                        error_message=error_message,
+                    )
                 break  # cloud still down, stop retrying
         if synced:
             _invalidate_cloud_task_board_cache()
@@ -60477,11 +60520,359 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             rawLlmGuessClientName=client_name_guess,
         )
 
+    _TASK_MUTATION_SNAPSHOT_COLUMNS = (
+        "title",
+        "description",
+        "status",
+        "progress_status",
+        "priority",
+        "list_id",
+        "deadline_at",
+        "scheduled_start_at",
+        "scheduled_end_at",
+        "completed_at",
+        "start_date",
+        "due_date",
+        "ddl",
+        "duration_minutes",
+        "scope_mode",
+        "client_id",
+        "event_line_id",
+        "project_module_id",
+        "project_flow_id",
+        "owner_id",
+        "business_category",
+        "current_blocker",
+        "next_action",
+        "recent_decision",
+        "evidence_count",
+        "updated_at",
+    )
+
+    def _task_mutation_snapshot(row) -> dict[str, object | None]:
+        return {column: row[column] for column in _TASK_MUTATION_SNAPSHOT_COLUMNS}
+
+    def _apply_pending_cloud_task_mutation(
+        *,
+        local_task_id: str,
+        sandbox_id: str,
+        cloud_patch: dict[str, object | None],
+        client_mutation_session: str = "",
+        client_mutation_order: int = 0,
+    ) -> tuple[int, dict[str, object | None]] | None:
+        """Persist the user's latest intent before the cloud request can block.
+
+        Repeated edits merge into one desired cloud patch.  The first unconfirmed
+        row snapshot remains the rollback point until the latest mutation settles.
+        """
+
+        def _txn(conn) -> tuple[int, dict[str, object | None]] | None:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (local_task_id, sandbox_id),
+            ).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            if client_mutation_order > 0:
+                stored_order = int(row["last_client_mutation_order"] or 0)
+                stored_session = str(row["last_client_mutation_session"] or "")
+                if stored_order != client_mutation_order or (
+                    client_mutation_session and stored_session != client_mutation_session
+                ):
+                    return None
+
+            current_sync_status = str(row["sync_status"] or "").strip().lower()
+            current_pending_action = str(row["pending_sync_action"] or "").strip().lower()
+            existing_pending_payload = from_json(row["cloud_payload_json"], {}) if row["cloud_payload_json"] else {}
+            if not isinstance(existing_pending_payload, dict) or current_sync_status not in {"pending", "syncing"} or current_pending_action != "update":
+                existing_pending_payload = {}
+            merged_cloud_patch: dict[str, object | None] = {
+                **existing_pending_payload,
+                **cloud_patch,
+            }
+
+            existing_snapshot = str(row["pending_base_snapshot_json"] or "").strip()
+            base_snapshot_json = existing_snapshot or to_json(_task_mutation_snapshot(row))
+            next_seq = int(row["local_mutation_seq"] or 0) + 1
+            timestamp = now_iso()
+            updates: dict[str, object | None] = {}
+            direct_field_map = {
+                "title": "title",
+                "description": "description",
+                "priority": "priority",
+                "listId": "list_id",
+                "scopeMode": "scope_mode",
+                "clientId": "client_id",
+                "eventLineId": "event_line_id",
+                "projectModuleId": "project_module_id",
+                "projectFlowId": "project_flow_id",
+                "ownerId": "owner_id",
+                "businessCategory": "business_category",
+                "currentBlocker": "current_blocker",
+                "nextAction": "next_action",
+                "recentDecision": "recent_decision",
+                "evidenceCount": "evidence_count",
+            }
+            for cloud_field, local_column in direct_field_map.items():
+                if cloud_field in cloud_patch:
+                    value = cloud_patch[cloud_field]
+                    if local_column in {"title", "priority", "list_id", "scope_mode"} and value is None:
+                        continue
+                    updates[local_column] = value
+
+            progress_status = str(cloud_patch.get("progressStatus") or row["progress_status"] or row["status"] or "todo")
+            if "progressStatus" in cloud_patch:
+                updates["status"] = progress_status
+                updates["progress_status"] = progress_status
+
+            temporal_keys = {
+                "startDate",
+                "dueDate",
+                "deadlineAt",
+                "scheduledStartAt",
+                "scheduledEndAt",
+                "completedAt",
+                "durationMinutes",
+                "progressStatus",
+            }
+            if temporal_keys.intersection(cloud_patch):
+                temporal_fields = derive_task_temporal_fields(
+                    start_date=(cloud_patch.get("startDate") if "startDate" in cloud_patch else row["start_date"]),
+                    due_date=(cloud_patch.get("dueDate") if "dueDate" in cloud_patch else row["due_date"]),
+                    duration_minutes=int(cloud_patch.get("durationMinutes") or row["duration_minutes"] or 60),
+                    deadline_at=(cloud_patch.get("deadlineAt") if "deadlineAt" in cloud_patch else row["deadline_at"]),
+                    scheduled_start_at=(cloud_patch.get("scheduledStartAt") if "scheduledStartAt" in cloud_patch else row["scheduled_start_at"]),
+                    scheduled_end_at=(cloud_patch.get("scheduledEndAt") if "scheduledEndAt" in cloud_patch else row["scheduled_end_at"]),
+                    completed_at=(cloud_patch.get("completedAt") if "completedAt" in cloud_patch else row["completed_at"]),
+                    previous_completed_at=str(row["completed_at"]) if row["completed_at"] else None,
+                    status=progress_status,
+                    timestamp=timestamp,
+                )
+                updates.update(
+                    {
+                        "deadline_at": temporal_fields["deadline_at"],
+                        "scheduled_start_at": temporal_fields["scheduled_start_at"],
+                        "scheduled_end_at": temporal_fields["scheduled_end_at"],
+                        "completed_at": temporal_fields["completed_at"],
+                        "start_date": temporal_fields["start_date"],
+                        "due_date": temporal_fields["due_date"],
+                        "duration_minutes": temporal_fields["duration_minutes"],
+                        "ddl": task_due_label(str(temporal_fields["due_date"])) if temporal_fields["due_date"] else "待确认",
+                    }
+                )
+
+            if updates.get("scope_mode") == "PERSONAL_ONLY":
+                updates.update(
+                    {
+                        "client_id": None,
+                        "event_line_id": None,
+                        "project_module_id": None,
+                        "project_flow_id": None,
+                    }
+                )
+
+            updates.update(
+                {
+                    "sync_status": "syncing",
+                    "cloud_payload_json": to_json(merged_cloud_patch),
+                    "pending_sync_action": "update",
+                    "last_sync_error": "",
+                    "local_mutation_seq": next_seq,
+                    "pending_base_snapshot_json": base_snapshot_json,
+                    "updated_at": timestamp,
+                }
+            )
+            assignments = ", ".join(f"{column} = ?" for column in updates)
+            conn.execute(
+                f"UPDATE tasks SET {assignments} WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
+                (*updates.values(), local_task_id, sandbox_id),
+            )
+            return next_seq, merged_cloud_patch
+
+        return state.db.run_in_transaction(_txn)
+
+    def _mark_task_mutation_pending_if_current(
+        *,
+        local_task_id: str,
+        sandbox_id: str,
+        mutation_seq: int,
+        error_message: str,
+        client_mutation_session: str = "",
+        client_mutation_order: int = 0,
+    ) -> bool:
+        def _txn(conn) -> bool:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                SET sync_status = 'pending',
+                    pending_sync_action = 'update',
+                    last_sync_error = ?
+                WHERE id = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                  AND local_mutation_seq = ?
+                  AND (
+                    ? = 0 OR (
+                      last_client_mutation_order = ?
+                      AND (? = '' OR last_client_mutation_session = ?)
+                    )
+                  )
+                """,
+                (
+                    error_message[:500],
+                    local_task_id,
+                    sandbox_id,
+                    mutation_seq,
+                    client_mutation_order,
+                    client_mutation_order,
+                    client_mutation_session,
+                    client_mutation_session,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(state.db.run_in_transaction(_txn))
+
+    def _finalize_task_mutation_if_current(
+        *,
+        local_task_id: str,
+        sandbox_id: str,
+        mutation_seq: int,
+        cloud_id: str,
+        cloud_version: str,
+        keep_pending: bool = False,
+        pending_payload: dict[str, object | None] | None = None,
+        error_message: str = "",
+        client_mutation_session: str = "",
+        client_mutation_order: int = 0,
+    ) -> bool:
+        timestamp = now_iso()
+
+        def _txn(conn) -> bool:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                SET sync_status = ?,
+                    cloud_id = ?,
+                    cloud_payload_json = ?,
+                    last_synced_at = ?,
+                    last_cloud_version = ?,
+                    pending_sync_action = ?,
+                    last_sync_error = ?,
+                    pending_base_snapshot_json = CASE WHEN ? THEN pending_base_snapshot_json ELSE '' END
+                WHERE id = ?
+                  AND COALESCE(sandbox_id, '') = ?
+                  AND local_mutation_seq = ?
+                  AND (
+                    ? = 0 OR (
+                      last_client_mutation_order = ?
+                      AND (? = '' OR last_client_mutation_session = ?)
+                    )
+                  )
+                """,
+                (
+                    "pending" if keep_pending else "synced",
+                    cloud_id,
+                    to_json(pending_payload or {}) if keep_pending else None,
+                    timestamp,
+                    cloud_version,
+                    "update" if keep_pending else "",
+                    error_message[:500],
+                    1 if keep_pending else 0,
+                    local_task_id,
+                    sandbox_id,
+                    mutation_seq,
+                    client_mutation_order,
+                    client_mutation_order,
+                    client_mutation_session,
+                    client_mutation_session,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(state.db.run_in_transaction(_txn))
+
+    def _rollback_task_mutation_if_current(
+        *,
+        local_task_id: str,
+        sandbox_id: str,
+        mutation_seq: int,
+        error_message: str,
+        client_mutation_session: str = "",
+        client_mutation_order: int = 0,
+    ) -> bool:
+        def _txn(conn) -> bool:
+            row = conn.execute(
+                """
+                SELECT local_mutation_seq, last_client_mutation_session,
+                       last_client_mutation_order, pending_base_snapshot_json
+                FROM tasks
+                WHERE id = ? AND COALESCE(sandbox_id, '') = ?
+                """,
+                (local_task_id, sandbox_id),
+            ).fetchone()
+            if row is None or int(row["local_mutation_seq"] or 0) != mutation_seq:
+                return False
+            if client_mutation_order > 0 and int(row["last_client_mutation_order"] or 0) != client_mutation_order:
+                return False
+            if client_mutation_session and str(row["last_client_mutation_session"] or "") != client_mutation_session:
+                return False
+            snapshot = from_json(row["pending_base_snapshot_json"], {}) if row["pending_base_snapshot_json"] else {}
+            if not isinstance(snapshot, dict) or not snapshot:
+                return False
+            restored = {
+                column: snapshot.get(column)
+                for column in _TASK_MUTATION_SNAPSHOT_COLUMNS
+                if column in snapshot
+            }
+            restored.update(
+                {
+                    "sync_status": "synced",
+                    "cloud_payload_json": None,
+                    "pending_sync_action": "",
+                    "last_sync_error": error_message[:500],
+                    "pending_base_snapshot_json": "",
+                }
+            )
+            assignments = ", ".join(f"{column} = ?" for column in restored)
+            cursor = conn.execute(
+                f"""UPDATE tasks SET {assignments}
+                    WHERE id = ?
+                      AND COALESCE(sandbox_id, '') = ?
+                      AND local_mutation_seq = ?
+                      AND (
+                        ? = 0 OR (
+                          last_client_mutation_order = ?
+                          AND (? = '' OR last_client_mutation_session = ?)
+                        )
+                      )""",
+                (
+                    *restored.values(),
+                    local_task_id,
+                    sandbox_id,
+                    mutation_seq,
+                    client_mutation_order,
+                    client_mutation_order,
+                    client_mutation_session,
+                    client_mutation_session,
+                ),
+            )
+            return cursor.rowcount == 1
+
+        return bool(state.db.run_in_transaction(_txn))
+
+    def _task_sync_error_status(error: Exception) -> int | None:
+        if isinstance(error, HTTPException):
+            return int(error.status_code)
+        return None
+
     @app.patch("/api/v1/tasks/{task_id}", response_model=TaskRecord)
     def update_task(
         task_id: str,
         payload: TaskUpdatePayload,
         request_sandbox_id: str = Header("", alias="X-Yiyu-Sandbox-Id"),
+        client_mutation_id: str = Header("", alias="X-Yiyu-Client-Mutation-Id"),
+        client_mutation_session: str = Header("", alias="X-Yiyu-Client-Mutation-Session"),
+        client_mutation_order_header: str = Header("", alias="X-Yiyu-Client-Mutation-Order"),
     ) -> TaskRecord:
         require_request_sandbox_matches_active(request_sandbox_id)
         workspace_context = _active_workspace_context_snapshot()
@@ -60491,7 +60882,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             sync_context = None
         existing_scope_row = state.db.fetchone(
             """
-            SELECT client_id, event_line_id, project_module_id, project_flow_id
+            SELECT id, client_id, event_line_id, project_module_id, project_flow_id,
+                   last_client_mutation_session, last_client_mutation_order
             FROM tasks
             WHERE (id = ? OR cloud_id = ?)
               AND COALESCE(sandbox_id, '') = ?
@@ -60505,6 +60897,52 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             (task_id, task_id),
         ):
             raise HTTPException(status_code=404, detail="Task not found")
+        try:
+            client_mutation_order = max(0, int(str(client_mutation_order_header or "0").strip() or "0"))
+        except ValueError:
+            client_mutation_order = 0
+        if client_mutation_order > 0 and existing_scope_row is not None:
+            local_order_task_id = str(existing_scope_row["id"])
+
+            def _claim_client_mutation_order(conn) -> bool:
+                cursor = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET last_client_mutation_session = ?,
+                        last_client_mutation_order = ?
+                    WHERE id = ?
+                      AND COALESCE(sandbox_id, '') = ?
+                      AND (
+                        last_client_mutation_session != ?
+                        OR last_client_mutation_order < ?
+                      )
+                    """,
+                    (
+                        client_mutation_session,
+                        client_mutation_order,
+                        local_order_task_id,
+                        workspace_context.sandbox_id,
+                        client_mutation_session,
+                        client_mutation_order,
+                    ),
+                )
+                return cursor.rowcount == 1
+
+            if not state.db.run_in_transaction(_claim_client_mutation_order):
+                current_tasks = fetch_tasks(
+                    "t.id = ?",
+                    (local_order_task_id,),
+                    workspace_context=workspace_context,
+                )
+                if current_tasks:
+                    logger.info(
+                        "[task-mutation] discarded stale client operation task=%s sandbox=%s order=%s",
+                        local_order_task_id,
+                        workspace_context.sandbox_id,
+                        client_mutation_order,
+                    )
+                    return current_tasks[0]
+                raise HTTPException(status_code=404, detail="Task not found")
         if sync_context is None:
             row = require_task_in_workspace(task_id, workspace_context)
             if payload.listId:
@@ -60632,45 +61070,67 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "tag_ids_json": to_json([tag.id for tag in resolved_tags]),
                 "updated_at": update_timestamp,
             }
-            state.db.execute(
-                """
+            def _apply_local_task_update(conn) -> bool:
+                cursor = conn.execute(
+                    """
                 UPDATE tasks
                 SET title = ?, description = ?, status = ?, progress_status = ?, priority = ?, list_id = ?, scope_mode = ?, client_id = ?, event_line_id = ?, project_module_id = ?, project_flow_id = ?, ddl = ?, deadline_at = ?, scheduled_start_at = ?, scheduled_end_at = ?, completed_at = ?, start_date = ?, due_date = ?, duration_minutes = ?, owner_id = ?, owner_name = ?, business_category = ?, current_blocker = ?, next_action = ?, recent_decision = ?, evidence_count = ?, tags_json = ?, tag_ids_json = ?, updated_at = ?
                 WHERE id = ?
-                """,
-                (
-                    merged["title"],
-                    merged["description"],
-                    merged["status"],
-                    merged["progress_status"],
-                    merged["priority"],
-                    merged["list_id"],
-                    merged["scope_mode"],
-                    merged["client_id"],
-                    merged["event_line_id"],
-                    merged["project_module_id"],
-                    merged["project_flow_id"],
-                    merged["ddl"],
-                    merged["deadline_at"],
-                    merged["scheduled_start_at"],
-                    merged["scheduled_end_at"],
-                    merged["completed_at"],
-                    merged["start_date"],
-                    merged["due_date"],
-                    merged["duration_minutes"],
-                    merged["owner_id"],
-                    merged["owner_name"],
-                    merged["business_category"],
-                    merged["current_blocker"],
-                    merged["next_action"],
-                    merged["recent_decision"],
-                    merged["evidence_count"],
-                    merged["tags_json"],
-                    merged["tag_ids_json"],
-                    merged["updated_at"],
-                    task_id,
-                ),
-            )
+                  AND (
+                    ? = 0 OR (
+                      last_client_mutation_order = ?
+                      AND (? = '' OR last_client_mutation_session = ?)
+                    )
+                  )
+                    """,
+                    (
+                        merged["title"],
+                        merged["description"],
+                        merged["status"],
+                        merged["progress_status"],
+                        merged["priority"],
+                        merged["list_id"],
+                        merged["scope_mode"],
+                        merged["client_id"],
+                        merged["event_line_id"],
+                        merged["project_module_id"],
+                        merged["project_flow_id"],
+                        merged["ddl"],
+                        merged["deadline_at"],
+                        merged["scheduled_start_at"],
+                        merged["scheduled_end_at"],
+                        merged["completed_at"],
+                        merged["start_date"],
+                        merged["due_date"],
+                        merged["duration_minutes"],
+                        merged["owner_id"],
+                        merged["owner_name"],
+                        merged["business_category"],
+                        merged["current_blocker"],
+                        merged["next_action"],
+                        merged["recent_decision"],
+                        merged["evidence_count"],
+                        merged["tags_json"],
+                        merged["tag_ids_json"],
+                        merged["updated_at"],
+                        str(row["id"]),
+                        client_mutation_order,
+                        client_mutation_order,
+                        client_mutation_session,
+                        client_mutation_session,
+                    ),
+                )
+                return cursor.rowcount == 1
+
+            if not state.db.run_in_transaction(_apply_local_task_update):
+                current_tasks = fetch_tasks(
+                    "t.id = ?",
+                    (str(row["id"]),),
+                    workspace_context=workspace_context,
+                )
+                if current_tasks:
+                    return current_tasks[0]
+                raise HTTPException(status_code=404, detail="Task not found")
             # 协作者同步：payload 显式给了 collaboratorIds 时，diff 然后增删 task_collaborators。
             # 旧版 update_task 本地路径完全不动这张表，导致编辑器里改了协作者后，
             # 数据库一直反映创建时状态；inbox/可完成权限判断全错。
@@ -60973,22 +61433,55 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.listId or (str(local_row_for_cloud["list_id"]) if local_row_for_cloud and local_row_for_cloud["list_id"] else None),
                 sandbox_id=workspace_context.sandbox_id,
             )
+        pending_mutation = _apply_pending_cloud_task_mutation(
+            local_task_id=local_task_id,
+            sandbox_id=workspace_context.sandbox_id,
+            cloud_patch=cloud_update_payload,
+            client_mutation_session=client_mutation_session,
+            client_mutation_order=client_mutation_order,
+        )
+        if pending_mutation is None:
+            current_tasks = fetch_tasks(
+                "t.id = ?",
+                (local_task_id,),
+                workspace_context=workspace_context,
+            )
+            if current_tasks:
+                return current_tasks[0]
+            raise HTTPException(status_code=404, detail="Task not found")
+        mutation_seq, cloud_update_payload = pending_mutation
+        logger.info(
+            "[task-mutation] local-first task=%s sandbox=%s seq=%s client_mutation=%s",
+            local_task_id,
+            workspace_context.sandbox_id,
+            mutation_seq,
+            client_mutation_id or "-",
+        )
         try:
             if not sync_context:
                 raise HTTPException(status_code=503, detail="当前组织需要重新登录")
             if not _resolve_task_cloud_event_line_dependency(local_task_id, cloud_update_payload, context=sync_context):
                 raise HTTPException(status_code=409, detail="等待事件线先同步到云端")
-            response = scoped_cloud_request(sync_context, "PATCH", f"/api/v1/tasks/{cloud_task_id}", json_body=cloud_update_payload)
+            response = scoped_cloud_request(
+                sync_context,
+                "PATCH",
+                f"/api/v1/tasks/{cloud_task_id}",
+                json_body=cloud_update_payload,
+                extra_headers={
+                    "X-Yiyu-Client-Mutation-Source": workspace_context.sandbox_id,
+                    "X-Yiyu-Local-Mutation-Seq": str(mutation_seq),
+                    "X-Yiyu-Client-Mutation-Id": client_mutation_id or f"local-{mutation_seq}",
+                },
+            )
             if not isinstance(response, dict):
                 raise HTTPException(status_code=502, detail="Invalid cloud task payload")
             returned_org_id = str(response.get("organizationId") or "").strip()
             if returned_org_id and returned_org_id != sync_context.organization_id:
                 raise HTTPException(status_code=409, detail="云端返回任务组织与当前工作空间不一致")
             synced_cloud_id = str(response.get("id") or cloud_task_id)
-            synced_at = now_iso()
             requested_progress = (
                 str(cloud_update_payload.get("progressStatus") or "").strip()
-                if requested_payload_progress
+                if "progressStatus" in cloud_update_payload
                 else ""
             )
             response_progress = str(response.get("progressStatus") or "").strip()
@@ -61000,38 +61493,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 # instead of letting a stale echo flip "restore task" back to done.
                 response_for_upsert["progressStatus"] = requested_progress
                 response_for_upsert["completedAt"] = cloud_update_payload.get("completedAt")
-                response_for_upsert["updatedAt"] = synced_at
+                response_for_upsert["updatedAt"] = now_iso()
                 logger.warning(
                     "[task-update] cloud echoed stale progress task=%s requested=%s got=%s; preserving local action",
                     local_task_id,
                     requested_progress,
                     response_progress,
                 )
-            state.db.execute(
-                """
-                UPDATE tasks
-                SET sync_status = ?,
-                    cloud_id = ?,
-                    cloud_payload_json = ?,
-                    last_synced_at = ?,
-                    last_cloud_version = ?,
-                    pending_sync_action = ?,
-                    last_sync_error = ?
-                WHERE (id = ? OR cloud_id = ?)
-                  AND COALESCE(sandbox_id, '') = ?
-                """,
-                (
-                    "pending" if response_status_mismatch else "synced",
-                    synced_cloud_id,
-                    to_json(cloud_update_payload) if response_status_mismatch else None,
-                    synced_at,
-                    str(response_for_upsert.get("updatedAt") or response_for_upsert.get("createdAt") or ""),
-                    "update" if response_status_mismatch else "",
-                    "云端返回了旧任务状态，已保留本地操作并等待回写。" if response_status_mismatch else "",
-                    local_task_id,
-                    synced_cloud_id,
-                    sync_context.sandbox_id,
+            finalized_current_mutation = _finalize_task_mutation_if_current(
+                local_task_id=local_task_id,
+                sandbox_id=sync_context.sandbox_id,
+                mutation_seq=mutation_seq,
+                cloud_id=synced_cloud_id,
+                cloud_version=str(response_for_upsert.get("updatedAt") or response_for_upsert.get("createdAt") or ""),
+                keep_pending=response_status_mismatch,
+                pending_payload=cloud_update_payload,
+                error_message=(
+                    "云端返回了旧任务状态，已保留本地操作并等待回写。"
+                    if response_status_mismatch
+                    else ""
                 ),
+                client_mutation_session=client_mutation_session,
+                client_mutation_order=client_mutation_order,
             )
             log_activity(
                 "task.update",
@@ -61040,18 +61523,20 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 payload.model_dump(exclude_none=True),
                 actor_name=_workspace_actor_name(workspace_context),
             )
-            upserted_task_id = _upsert_cloud_task_shadow_local(
-                response_for_upsert,
-                target_sandbox_id=sync_context.sandbox_id,
-                preserve_local_done_guard=not (
-                    requested_payload_progress is not None
-                    and requested_payload_progress != "done"
-                ),
-            )
-            if upserted_task_id:
+            upserted_task_id = None
+            if finalized_current_mutation and not response_status_mismatch:
+                upserted_task_id = _upsert_cloud_task_shadow_local(
+                    response_for_upsert,
+                    target_sandbox_id=sync_context.sandbox_id,
+                    preserve_local_done_guard=not (
+                        requested_payload_progress is not None
+                        and requested_payload_progress != "done"
+                    ),
+                )
+            if upserted_task_id or not finalized_current_mutation or response_status_mismatch:
                 updated_task = fetch_tasks(
                     "t.id = ?",
-                    (upserted_task_id,),
+                    (upserted_task_id or local_task_id,),
                     workspace_context=workspace_context,
                 )[0]
             else:
@@ -61069,7 +61554,44 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """,
                 (task_id, task_id, workspace_context.sandbox_id),
             )
-            if local_row:
+            sync_error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
+            authoritative_rejection = _task_sync_error_status(error) in {400, 403, 404, 422}
+            if authoritative_rejection and _rollback_task_mutation_if_current(
+                local_task_id=local_task_id,
+                sandbox_id=workspace_context.sandbox_id,
+                mutation_seq=mutation_seq,
+                error_message=sync_error_message,
+                client_mutation_session=client_mutation_session,
+                client_mutation_order=client_mutation_order,
+            ):
+                raise HTTPException(
+                    status_code=_task_sync_error_status(error) or 400,
+                    detail=sync_error_message or "云端拒绝了本次任务修改",
+                ) from error
+            _mark_task_mutation_pending_if_current(
+                local_task_id=local_task_id,
+                sandbox_id=workspace_context.sandbox_id,
+                mutation_seq=mutation_seq,
+                error_message=sync_error_message,
+                client_mutation_session=client_mutation_session,
+                client_mutation_order=client_mutation_order,
+            )
+            current_local_tasks = fetch_tasks(
+                "t.id = ?",
+                (local_task_id,),
+                workspace_context=workspace_context,
+            )
+            updated_task = current_local_tasks[0] if current_local_tasks else None
+            if updated_task is not None:
+                logger.warning(
+                    "[task-mutation] cloud pending task=%s sandbox=%s seq=%s status=%s error=%s",
+                    local_task_id,
+                    workspace_context.sandbox_id,
+                    mutation_seq,
+                    _task_sync_error_status(error),
+                    sync_error_message,
+                )
+            elif local_row:
                 local_id = str(local_row["id"])
                 fallback_due_date_was_set = "dueDate" in payload_fields or "ddl" in payload_fields
                 fallback_due_date = (
@@ -61106,7 +61628,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 fallback_due_value = str(fallback_temporal_fields["due_date"]) if fallback_temporal_fields["due_date"] else None
                 if fallback_due_date_was_set:
                     fallback_due_date = fallback_due_value
-                sync_error_message = str(getattr(error, "detail", "") or str(error) or type(error).__name__)[:500]
                 fallback_list_id = _ensure_local_task_list(
                     payload.listId if "listId" in payload_fields else (str(local_row["list_id"]) if local_row["list_id"] else None),
                     sandbox_id=workspace_context.sandbox_id,

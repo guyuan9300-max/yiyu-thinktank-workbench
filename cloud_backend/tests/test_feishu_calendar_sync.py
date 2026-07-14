@@ -549,6 +549,8 @@ def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_
     )
 
     assert response.status_code == 200, response.text
+    assert updated_payloads == []
+    cloud_main._process_feishu_sync_outbox_once(client.app.state.app_state)  # noqa: SLF001
     assert updated_payloads
     assert updated_payloads[0]["task_guid"] == "task_guid_update"
     assert updated_payloads[0]["body"]["summary"] == "飞书任务中心更新测试"
@@ -560,6 +562,52 @@ def test_update_task_auto_updates_feishu_task_center_completion_and_members(tmp_
     ]
     assert calendar_updates == []
     assert calendar_deletes == []
+
+
+def test_consecutive_task_updates_coalesce_and_sync_latest_state(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    headers = auth_headers(client)
+    user_id = bind_current_user_to_feishu(client, headers, receive_id="ou_task_latest")
+    save_org_feishu_integration(client, headers, monkeypatch)
+    monkeypatch.setattr(cloud_main, "_feishu_fetch_tenant_access_token", lambda **_: ("tenant_demo", {"code": 0}))
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_create_task",
+        lambda *, tenant_access_token, body: {
+            "code": 0,
+            "data": {"task": {"guid": "task_guid_latest", "url": "https://applink.feishu.cn/client/todo/detail?guid=task_guid_latest"}},
+        },
+    )
+    updated_payloads: list[dict] = []
+    monkeypatch.setattr(
+        cloud_main,
+        "_feishu_update_task",
+        lambda *, tenant_access_token, task_guid, body, update_fields: updated_payloads.append(body)
+        or {"code": 0, "data": {"task": {"guid": task_guid}}},
+    )
+    task_id = create_task(client, headers, ownerId=user_id, dueDate="2026-05-28")
+
+    first = client.patch(f"/api/v1/tasks/{task_id}", json={"title": "第一次拖动"}, headers=headers)
+    second = client.patch(f"/api/v1/tasks/{task_id}", json={"title": "最后一次拖动"}, headers=headers)
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert updated_payloads == []
+    active_rows = client.app.state.app_state.db.fetchall(
+        """
+        SELECT * FROM org_feishu_sync_outbox
+        WHERE local_type = 'task' AND local_id = ? AND remote_type = 'feishu_task'
+          AND action = 'retry_task_sync' AND sync_status IN ('queued', 'failed')
+        """,
+        (task_id,),
+    )
+    assert len(active_rows) == 1
+
+    processed = cloud_main._process_feishu_sync_outbox_once(client.app.state.app_state)  # noqa: SLF001
+
+    assert processed == 1
+    assert len(updated_payloads) == 1
+    assert updated_payloads[0]["summary"] == "最后一次拖动"
 
 
 def test_update_inbound_feishu_task_falls_back_to_member_invoker_when_tenant_unauthorized(tmp_path, monkeypatch):
@@ -600,6 +648,8 @@ def test_update_inbound_feishu_task_falls_back_to_member_invoker_when_tenant_una
     response = client.patch(f"/api/v1/tasks/{task_id}", json={"progressStatus": "done"}, headers=headers)
 
     assert response.status_code == 200, response.text
+    assert user_updates == []
+    cloud_main._process_feishu_sync_outbox_once(state)  # noqa: SLF001
     assert user_updates
     assert user_updates[0]["user_access_token"] == "user_access_demo"
     assert user_updates[0]["task_guid"] == "task_guid_user_created"
@@ -608,7 +658,8 @@ def test_update_inbound_feishu_task_falls_back_to_member_invoker_when_tenant_una
         "SELECT * FROM org_feishu_sync_outbox WHERE local_id = ? AND remote_type = 'feishu_task'",
         (task_id,),
     )
-    assert outbox is None
+    assert outbox is not None
+    assert outbox["sync_status"] == "synced"
     mapping = state.db.fetchone(
         "SELECT * FROM org_feishu_sync_mappings WHERE local_id = ? AND remote_type = 'feishu_task'",
         (task_id,),
@@ -1214,6 +1265,7 @@ def test_feishu_task_inbound_does_not_revert_local_due_date_when_outbound_sync_f
     response = client.patch(f"/api/v1/tasks/{task_id}", json={"dueDate": "2026-06-26"}, headers=headers)
 
     assert response.status_code == 200, response.text
+    cloud_main._process_feishu_sync_outbox_once(state)  # noqa: SLF001
     local_after_patch = state.db.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
     assert local_after_patch["due_date"] == "2026-06-26"
     mapping_after_patch = state.db.fetchone(
@@ -2088,6 +2140,8 @@ def test_update_task_updates_existing_calendar_mirror_when_time_or_title_changes
     )
 
     assert response.status_code == 200, response.text
+    assert updated_events == []
+    cloud_main._process_feishu_sync_outbox_once(client.app.state.app_state)  # noqa: SLF001
     assert len(created_events) == 1
     assert updated_events
     assert updated_events[0]["event_id"] == "evt_existing_mirror"
@@ -2147,6 +2201,8 @@ def test_update_task_updates_existing_calendar_event_mapping(tmp_path, monkeypat
     )
 
     assert response.status_code == 200, response.text
+    assert updated_events == []
+    cloud_main._process_feishu_sync_outbox_once(client.app.state.app_state)  # noqa: SLF001
     assert deleted_events == []
     assert updated_events and updated_events[0]["event_id"] == "evt_remove_time"
     status = client.get(
@@ -2200,6 +2256,7 @@ def test_update_task_keeps_existing_calendar_event_when_time_is_removed(tmp_path
     )
 
     assert response.status_code == 200, response.text
+    cloud_main._process_feishu_sync_outbox_once(client.app.state.app_state)  # noqa: SLF001
     assert update_calls == []
     assert delete_calls == []
     status = client.get(
@@ -2380,6 +2437,7 @@ def test_done_task_without_existing_calendar_does_not_create_mirror(tmp_path, mo
     response = client.patch(f"/api/v1/tasks/{task_id}", json={"progressStatus": "done"}, headers=headers)
 
     assert response.status_code == 200, response.text
+    cloud_main._process_feishu_sync_outbox_once(state)  # noqa: SLF001
     assert calls == []
     status = client.get(
         "/api/v1/feishu-sync/status",

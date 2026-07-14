@@ -11,7 +11,7 @@ from pathlib import Path
 # 之前 20260518001 (200 亿) 远超上限, SQLite 静默 set 为 0, 每次启动都重做完整迁移
 # (这是 20260518 那次坏 db 的真正根因之一: 重做时遇上 reload race + backfill 无事务).
 # 改用 YYYYMMDD 格式 (8 位), 每次 schema 变化递增日期. 20260519 = 此次修复.
-BACKEND_SCHEMA_VERSION = 20260711  # 异步任务持久沙箱归属（expand-only）
+BACKEND_SCHEMA_VERSION = 20260714  # 任务本地 mutation 序号与可恢复快照（expand-only）
 
 
 # R6：内置罗永浩写作风格的 distilled prompt（手工 distill，不依赖在线抓取，避免外部依赖）。
@@ -1373,6 +1373,10 @@ class Database:
                     last_cloud_version TEXT NOT NULL DEFAULT '',
                     pending_sync_action TEXT NOT NULL DEFAULT '',
                     last_sync_error TEXT NOT NULL DEFAULT '',
+                    local_mutation_seq INTEGER NOT NULL DEFAULT 0,
+                    last_client_mutation_session TEXT NOT NULL DEFAULT '',
+                    last_client_mutation_order INTEGER NOT NULL DEFAULT 0,
+                    pending_base_snapshot_json TEXT NOT NULL DEFAULT '',
                     FOREIGN KEY(list_id) REFERENCES task_lists(id) ON DELETE RESTRICT
                 );
 
@@ -4188,6 +4192,10 @@ class Database:
             self._ensure_column("tasks", "last_cloud_version", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "pending_sync_action", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column("tasks", "last_sync_error", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "local_mutation_seq", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("tasks", "last_client_mutation_session", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column("tasks", "last_client_mutation_order", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column("tasks", "pending_base_snapshot_json", "TEXT NOT NULL DEFAULT ''")
             self.conn.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_sandboxes_cloud_identity

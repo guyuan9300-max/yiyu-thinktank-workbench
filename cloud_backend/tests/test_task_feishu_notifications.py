@@ -265,24 +265,26 @@ def test_key_field_changes_send_immediately_and_missing_mobile_recipients_are_sk
     )
     assert updated.status_code == 200, updated.text
 
+    client.app.state.app_state.feishu_notifications.process_due_notifications()
+
     assert len(sent_cards) == 1
     assert sent_cards[0]["receive_id"] == "ou_qinghua"
     assert "变更项：截止时间、负责人、协作者" in str(sent_cards[0]["card"]["elements"][1]["content"])
 
     rows = client.app.state.app_state.db.fetchall(
-        "SELECT recipient_user_id, delivery_status, changed_fields_json, delivery_message FROM org_feishu_task_notifications WHERE task_id = ? AND event_type = 'key_fields_changed' ORDER BY recipient_user_id ASC",
+        "SELECT recipient_user_id, delivery_status, payload_json, delivery_message FROM org_feishu_notifications WHERE object_type = 'task' AND object_id = ? AND message_type = 'task_content_changed' ORDER BY recipient_user_id ASC",
         (task_id,),
     )
     assert len(rows) == 2
     status_by_user = {str(row["recipient_user_id"]): str(row["delivery_status"]) for row in rows}
-    assert status_by_user == {"user_jianing": "skipped_unbound", "user_qinghua": "sent"}
+    assert status_by_user == {"user_jianing": "skipped_unbound", "user_qinghua": "sent_card"}
     assert any("成员尚未填写飞书手机号" in str(row["delivery_message"]) for row in rows if str(row["recipient_user_id"]) == "user_jianing")
-    assert all("deadlineAt" in str(row["changed_fields_json"]) for row in rows)
-    assert all("ownerId" in str(row["changed_fields_json"]) for row in rows)
-    assert all("collaboratorIds" in str(row["changed_fields_json"]) for row in rows)
+    assert all("deadlineAt" in str(row["payload_json"]) for row in rows)
+    assert all("ownerId" in str(row["payload_json"]) for row in rows)
+    assert all("collaboratorIds" in str(row["payload_json"]) for row in rows)
 
     queued_rows = client.app.state.app_state.db.fetchall(
-        "SELECT delivery_status, recipient_user_id FROM org_feishu_notifications WHERE object_type = 'task' AND object_id = ? AND message_type = 'task_changed' ORDER BY recipient_user_id ASC",
+        "SELECT delivery_status, recipient_user_id FROM org_feishu_notifications WHERE object_type = 'task' AND object_id = ? AND message_type = 'task_content_changed' ORDER BY recipient_user_id ASC",
         (task_id,),
     )
     assert {str(row["delivery_status"]) for row in queued_rows} == {"sent_card", "skipped_unbound"}
@@ -335,6 +337,8 @@ def test_immediate_change_absorbs_pending_content_change_into_one_notification(t
     )
     assert due_updated.status_code == 200, due_updated.text
 
+    client.app.state.app_state.feishu_notifications.process_due_notifications()
+
     assert len(sent_cards) == 1
     merged_card_text = str(sent_cards[0]["card"]["elements"][1]["content"])
     assert "变更项：标题、截止时间" in merged_card_text or "变更项：截止时间、标题" in merged_card_text
@@ -344,5 +348,4 @@ def test_immediate_change_absorbs_pending_content_change_into_one_notification(t
         (task_id,),
     )
     assert len(queued_rows) == 1
-    assert str(queued_rows[0]["delivery_status"]) == "cancelled"
-    assert "已并入一次即时任务更新提醒" in str(queued_rows[0]["delivery_message"])
+    assert str(queued_rows[0]["delivery_status"]) == "sent_card"

@@ -1762,6 +1762,9 @@ class TaskRecord(BaseModel):
     memoryHints: list[str] = Field(default_factory=list)
     backgroundReadiness: BackgroundReadiness | None = None
     linkedFactsPreview: list[MemoryFact] = Field(default_factory=list)
+    syncStatus: Literal["local", "syncing", "synced", "pending", "error"] | None = None
+    localMutationSeq: int = 0
+    syncError: str | None = None
     createdAt: str
     updatedAt: str
 
