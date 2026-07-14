@@ -1765,6 +1765,8 @@ class AppState:
     volatile_cloud_refresh_token: str = ""
     volatile_cloud_session_user_json: str = ""
     volatile_cloud_sessions: dict[str, dict[str, str]] = field(default_factory=dict)
+    cloud_refresh_locks: dict[str, Lock] = field(default_factory=dict)
+    cloud_refresh_locks_guard: Lock = field(default_factory=Lock)
     cloud_session_persistent: bool = False
     volatile_local_session_user_id: str = ""
     volatile_local_sessions: dict[str, str] = field(default_factory=dict)
@@ -10332,6 +10334,114 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         cloud_instance_id: str = ""
         persistent: bool = True
 
+    def _scoped_cloud_refresh_lock(sandbox_id: str) -> Lock:
+        with state.cloud_refresh_locks_guard:
+            return state.cloud_refresh_locks.setdefault(sandbox_id, Lock())
+
+    def _read_latest_scoped_cloud_session(
+        context: ScopedCloudContext,
+    ) -> tuple[str, str, SessionUserRecord | None]:
+        if context.persistent:
+            access_token = get_sandbox_setting(state.db, context.sandbox_id, "cloud_access_token", "")
+            refresh_token = get_sandbox_setting(state.db, context.sandbox_id, "cloud_refresh_token", "")
+            raw_user = get_sandbox_setting(state.db, context.sandbox_id, "cloud_session_user", "")
+        else:
+            volatile = state.volatile_cloud_sessions.get(context.sandbox_id, {})
+            access_token = str(volatile.get("cloud_access_token") or "")
+            refresh_token = str(volatile.get("cloud_refresh_token") or "")
+            raw_user = str(volatile.get("cloud_session_user") or "")
+        parsed_user = from_json(raw_user, {}) if raw_user else {}
+        if not isinstance(parsed_user, dict) or not parsed_user:
+            return access_token, refresh_token, None
+        try:
+            user = SessionUserRecord(**parsed_user)
+        except Exception:
+            return access_token, refresh_token, None
+        if context.organization_id and user.organizationId != context.organization_id:
+            return access_token, refresh_token, None
+        return access_token, refresh_token, user
+
+    def _adopt_newer_scoped_cloud_session(
+        context: ScopedCloudContext,
+        attempted_refresh_token: str,
+    ) -> SessionUserRecord | None:
+        access_token, refresh_token, user = _read_latest_scoped_cloud_session(context)
+        if not refresh_token or refresh_token == attempted_refresh_token or user is None:
+            return None
+        context.access_token = access_token
+        context.refresh_token = refresh_token
+        return user
+
+    def _adopt_changed_scoped_cloud_session(
+        context: ScopedCloudContext,
+        *,
+        attempted_access_token: str,
+        attempted_refresh_token: str,
+    ) -> SessionUserRecord | None:
+        access_token, refresh_token, user = _read_latest_scoped_cloud_session(context)
+        if user is None or (
+            access_token == attempted_access_token
+            and refresh_token == attempted_refresh_token
+        ):
+            return None
+        context.access_token = access_token
+        context.refresh_token = refresh_token
+        return user
+
+    def _clear_scoped_cloud_session_if_unchanged(
+        context: ScopedCloudContext,
+        *,
+        attempted_access_token: str,
+        attempted_refresh_token: str,
+    ) -> bool:
+        if context.persistent:
+            def _clear_if_current(conn) -> bool:
+                rows = conn.execute(
+                    """
+                    SELECT key, value
+                    FROM sandbox_settings
+                    WHERE sandbox_id = ?
+                      AND key IN ('cloud_access_token', 'cloud_refresh_token')
+                    """,
+                    (context.sandbox_id,),
+                ).fetchall()
+                current_tokens = {str(row[0]): str(row[1] or "") for row in rows}
+                if current_tokens.get("cloud_access_token", "") != attempted_access_token:
+                    return False
+                if current_tokens.get("cloud_refresh_token", "") != attempted_refresh_token:
+                    return False
+                for key in ("cloud_access_token", "cloud_refresh_token", "cloud_session_user"):
+                    conn.execute(
+                        """
+                        INSERT INTO sandbox_settings(sandbox_id, key, value, updated_at)
+                        VALUES(?, ?, '', ?)
+                        ON CONFLICT(sandbox_id, key)
+                        DO UPDATE SET value = '', updated_at = excluded.updated_at
+                        """,
+                        (context.sandbox_id, key, now_iso()),
+                    )
+                return True
+
+            cleared = bool(state.db.run_in_transaction(_clear_if_current))
+        else:
+            volatile = state.volatile_cloud_sessions.get(context.sandbox_id, {})
+            current_access_token = str(volatile.get("cloud_access_token") or "")
+            current_refresh_token = str(volatile.get("cloud_refresh_token") or "")
+            if current_access_token != attempted_access_token:
+                return False
+            if current_refresh_token != attempted_refresh_token:
+                return False
+            cleared = True
+        if not cleared:
+            return False
+        state.volatile_cloud_sessions.pop(context.sandbox_id, None)
+        if context.sandbox_id == get_active_sandbox_id(state.db):
+            state.volatile_cloud_access_token = ""
+            state.volatile_cloud_refresh_token = ""
+            state.volatile_cloud_session_user_json = ""
+            _refresh_active_workspace_runtime()
+        return True
+
     def _write_scoped_cloud_session(
         context: ScopedCloudContext,
         *,
@@ -10383,44 +10493,69 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _refresh_active_workspace_runtime()
 
     def _refresh_scoped_cloud_session(context: ScopedCloudContext) -> SessionUserRecord:
-        if not context.refresh_token:
-            _clear_scoped_cloud_session(context)
-            raise HTTPException(status_code=401, detail="该组织登录状态已过期，请重新登录")
-        try:
-            response = _httpx_request_without_proxy(
-                "POST",
-                f"{context.cloud_api_url}/api/v1/auth/refresh",
-                json={"refreshToken": context.refresh_token},
-                timeout=20.0,
+        with _scoped_cloud_refresh_lock(context.sandbox_id):
+            attempted_refresh_token = context.refresh_token
+            newer_user = _adopt_newer_scoped_cloud_session(context, attempted_refresh_token)
+            if newer_user is not None:
+                return newer_user
+            if not context.refresh_token:
+                _clear_scoped_cloud_session_if_unchanged(
+                    context,
+                    attempted_access_token=context.access_token,
+                    attempted_refresh_token="",
+                )
+                raise HTTPException(status_code=401, detail="该组织登录状态已过期，请重新登录")
+            attempted_refresh_token = context.refresh_token
+            try:
+                response = _httpx_request_without_proxy(
+                    "POST",
+                    f"{context.cloud_api_url}/api/v1/auth/refresh",
+                    json={"refreshToken": attempted_refresh_token},
+                    timeout=20.0,
+                )
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
+            if response.status_code >= 400:
+                if response.status_code in {401, 403}:
+                    newer_user = _adopt_newer_scoped_cloud_session(context, attempted_refresh_token)
+                    if newer_user is not None:
+                        return newer_user
+                    cleared = _clear_scoped_cloud_session_if_unchanged(
+                        context,
+                        attempted_access_token=context.access_token,
+                        attempted_refresh_token=attempted_refresh_token,
+                    )
+                    if not cleared:
+                        newer_user = _adopt_newer_scoped_cloud_session(context, attempted_refresh_token)
+                        if newer_user is not None:
+                            return newer_user
+                detail = _cloud_error_detail_from_response(response)
+                raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
+            payload = _cloud_json_payload(response, context="刷新组织登录状态")
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=502, detail="Invalid scoped cloud refresh payload")
+            token = str(payload.get("accessToken") or "")
+            next_refresh_token = str(payload.get("refreshToken") or "")
+            user_payload = payload.get("user")
+            if not token or not next_refresh_token or not isinstance(user_payload, dict):
+                raise HTTPException(status_code=502, detail="组织云刷新结果缺少有效会话")
+            user = SessionUserRecord(**user_payload)
+            if context.organization_id and user.organizationId != context.organization_id:
+                _clear_scoped_cloud_session_if_unchanged(
+                    context,
+                    attempted_access_token=context.access_token,
+                    attempted_refresh_token=attempted_refresh_token,
+                )
+                raise HTTPException(status_code=409, detail="组织登录状态与当前工作空间不匹配，请重新登录该组织")
+            _write_scoped_cloud_session(
+                context,
+                access_token=token,
+                refresh_token=next_refresh_token,
+                user=user,
             )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
-        if response.status_code >= 400:
-            if response.status_code in {401, 403}:
-                _clear_scoped_cloud_session(context)
-            detail = _cloud_error_detail_from_response(response)
-            raise HTTPException(status_code=response.status_code, detail=detail or f"HTTP {response.status_code}")
-        payload = _cloud_json_payload(response, context="刷新组织登录状态")
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=502, detail="Invalid scoped cloud refresh payload")
-        token = str(payload.get("accessToken") or "")
-        next_refresh_token = str(payload.get("refreshToken") or "")
-        user_payload = payload.get("user")
-        if not token or not next_refresh_token or not isinstance(user_payload, dict):
-            raise HTTPException(status_code=502, detail="组织云刷新结果缺少有效会话")
-        user = SessionUserRecord(**user_payload)
-        if context.organization_id and user.organizationId != context.organization_id:
-            _clear_scoped_cloud_session(context)
-            raise HTTPException(status_code=409, detail="组织登录状态与当前工作空间不匹配，请重新登录该组织")
-        _write_scoped_cloud_session(
-            context,
-            access_token=token,
-            refresh_token=next_refresh_token,
-            user=user,
-        )
-        context.access_token = token
-        context.refresh_token = next_refresh_token
-        return user
+            context.access_token = token
+            context.refresh_token = next_refresh_token
+            return user
 
     def scoped_cloud_request(
         context: ScopedCloudContext,
@@ -10441,9 +10576,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
 
         token = context.access_token
+        request_refresh_token = context.refresh_token
         if not token:
             _refresh_scoped_cloud_session(context)
             token = context.access_token
+            request_refresh_token = context.refresh_token
         try:
             response = perform_request(token)
         except httpx.HTTPError:
@@ -10454,9 +10591,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=502, detail=f"Cloud backend unavailable: {exc}") from exc
         if response.status_code == 401 and context.refresh_token:
             _refresh_scoped_cloud_session(context)
-            response = perform_request(context.access_token)
+            token = context.access_token
+            request_refresh_token = context.refresh_token
+            response = perform_request(token)
         if response.status_code == 401:
-            _clear_scoped_cloud_session(context)
+            cleared = _clear_scoped_cloud_session_if_unchanged(
+                context,
+                attempted_access_token=token,
+                attempted_refresh_token=request_refresh_token,
+            )
+            if not cleared and _adopt_changed_scoped_cloud_session(
+                context,
+                attempted_access_token=token,
+                attempted_refresh_token=request_refresh_token,
+            ) is not None:
+                token = context.access_token
+                request_refresh_token = context.refresh_token
+                response = perform_request(token)
+                if response.status_code == 401:
+                    _clear_scoped_cloud_session_if_unchanged(
+                        context,
+                        attempted_access_token=token,
+                        attempted_refresh_token=request_refresh_token,
+                    )
         if 300 <= response.status_code < 400:
             raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
@@ -10596,10 +10753,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
 
         token = context.access_token
+        request_refresh_token = context.refresh_token
         if not token:
             if context.refresh_token:
                 _refresh_scoped_cloud_session(context)
                 token = context.access_token
+                request_refresh_token = context.refresh_token
             else:
                 raise HTTPException(status_code=401, detail="Not authenticated")
         try:
@@ -10613,9 +10772,28 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if response.status_code == 401 and context.refresh_token:
             _refresh_scoped_cloud_session(context)
             token = context.access_token
+            request_refresh_token = context.refresh_token
             response = perform_request(token)
         if response.status_code == 401:
-            _clear_scoped_cloud_session(context)
+            cleared = _clear_scoped_cloud_session_if_unchanged(
+                context,
+                attempted_access_token=token,
+                attempted_refresh_token=request_refresh_token,
+            )
+            if not cleared and _adopt_changed_scoped_cloud_session(
+                context,
+                attempted_access_token=token,
+                attempted_refresh_token=request_refresh_token,
+            ) is not None:
+                token = context.access_token
+                request_refresh_token = context.refresh_token
+                response = perform_request(token)
+                if response.status_code == 401:
+                    _clear_scoped_cloud_session_if_unchanged(
+                        context,
+                        attempted_access_token=token,
+                        attempted_refresh_token=request_refresh_token,
+                    )
         if 300 <= response.status_code < 400:
             raise HTTPException(status_code=502, detail=_cloud_redirect_detail(response))
         if response.status_code >= 400:
@@ -10893,7 +11071,11 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(status_code=502, detail="Invalid auth response")
         user = SessionUserRecord(**payload)
         if user.organizationId != context.organization_id:
-            _clear_scoped_cloud_session(context)
+            _clear_scoped_cloud_session_if_unchanged(
+                context,
+                attempted_access_token=context.access_token,
+                attempted_refresh_token=context.refresh_token,
+            )
             raise HTTPException(status_code=409, detail="云端账号与当前组织工作空间不匹配，请重新登录该组织")
         _write_scoped_cloud_session(
             context,
@@ -30992,15 +31174,37 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
         if not context.access_token:
             _refresh_scoped_cloud_session(context)
+        request_access_token = context.access_token
+        request_refresh_token = context.refresh_token
         try:
-            response = perform_request(context.access_token)
+            response = perform_request(request_access_token)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail=f"Cloud attachment unavailable: {exc}") from exc
         if response.status_code == 401 and context.refresh_token:
             _refresh_scoped_cloud_session(context)
-            response = perform_request(context.access_token)
+            request_access_token = context.access_token
+            request_refresh_token = context.refresh_token
+            response = perform_request(request_access_token)
         if response.status_code == 401:
-            _clear_scoped_cloud_session(context)
+            cleared = _clear_scoped_cloud_session_if_unchanged(
+                context,
+                attempted_access_token=request_access_token,
+                attempted_refresh_token=request_refresh_token,
+            )
+            if not cleared and _adopt_changed_scoped_cloud_session(
+                context,
+                attempted_access_token=request_access_token,
+                attempted_refresh_token=request_refresh_token,
+            ) is not None:
+                request_access_token = context.access_token
+                request_refresh_token = context.refresh_token
+                response = perform_request(request_access_token)
+                if response.status_code == 401:
+                    _clear_scoped_cloud_session_if_unchanged(
+                        context,
+                        attempted_access_token=request_access_token,
+                        attempted_refresh_token=request_refresh_token,
+                    )
         if 300 <= response.status_code < 400:
             raise HTTPException(status_code=502, detail="Cloud redirect rejected")
         if response.status_code >= 400:
@@ -35499,7 +35703,6 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _ensure_local_organization_workspace_from_cloud_membership()
         except HTTPException as exc:
             if exc.status_code in {401, 403}:
-                clear_cloud_session()
                 return _cloud_relogin_state(str(exc.detail) or None)
             if exc.status_code in {502, 503, 504} and cached_user is not None:
                 return AuthStateResponse(

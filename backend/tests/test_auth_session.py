@@ -4,6 +4,7 @@ import json
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 from pathlib import Path
 
@@ -91,6 +92,216 @@ def test_auth_me_refreshes_expired_cloud_session(tmp_path: Path, monkeypatch):
     assert payload["user"]["email"] == "guyuan@klngo.org"
     assert get_active_sandbox_setting(db, "cloud_access_token", "") == "fresh-access"
     assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-2"
+
+
+def test_concurrent_auth_refresh_rotates_once_and_preserves_session(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    user_payload = {
+        "id": "user-concurrent",
+        "organizationId": "org-concurrent",
+        "organizationName": "并发刷新组织",
+        "email": "concurrent@example.test",
+        "fullName": "并发刷新成员",
+        "primaryRole": "employee",
+        "accountStatus": "approved",
+        "membershipStatus": "approved",
+    }
+    workspace = create_sandbox(
+        db,
+        kind="organization",
+        name="并发刷新组织",
+        cloud_api_url="https://concurrent.example.test",
+    )
+    db.execute(
+        "UPDATE sandboxes SET organization_id = ?, cloud_instance_id = ?, identity_state = 'verified' WHERE id = ?",
+        ("org-concurrent", "cloud-concurrent", workspace.id),
+    )
+    for key, value in (
+        ("cloud_access_token", "expired-access"),
+        ("cloud_refresh_token", "refresh-1"),
+        ("cloud_session_user", json.dumps(user_payload, ensure_ascii=False)),
+        ("cloud_session_user_snapshot", json.dumps(user_payload, ensure_ascii=False)),
+    ):
+        set_sandbox_setting(db, workspace.id, key, value)
+    assert client.post(f"/api/v1/workspaces/{workspace.id}/activate").status_code == 200
+
+    expired_barrier = threading.Barrier(2)
+    refresh_call_count = 0
+    refresh_count_lock = threading.Lock()
+
+    def fake_request(method: str, url: str, json=None, headers=None, timeout=None, trust_env=None):
+        nonlocal refresh_call_count
+        if url.endswith("/api/v1/auth/me"):
+            authorization = (headers or {}).get("Authorization")
+            if authorization == "Bearer expired-access":
+                expired_barrier.wait(timeout=2)
+                return httpx.Response(401, json={"detail": "expired"})
+            if authorization == "Bearer fresh-access":
+                return httpx.Response(200, json=user_payload)
+        if url.endswith("/api/v1/auth/refresh"):
+            with refresh_count_lock:
+                refresh_call_count += 1
+            assert json == {"refreshToken": "refresh-1"}
+            time.sleep(0.05)
+            return httpx.Response(
+                200,
+                json={
+                    "accessToken": "fresh-access",
+                    "refreshToken": "refresh-2",
+                    "user": user_payload,
+                },
+            )
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_request)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: client.get("/api/v1/auth/me"), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert all(response.json()["authenticated"] is True for response in responses)
+    assert refresh_call_count == 1
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "fresh-access"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-2"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user", ""))["organizationId"] == "org-concurrent"
+    client.__exit__(None, None, None)
+
+
+def test_stale_refresh_failure_cannot_clear_newer_session(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    user_payload = {
+        "id": "user-stale-refresh",
+        "organizationId": "org-stale-refresh",
+        "organizationName": "迟到刷新组织",
+        "email": "stale-refresh@example.test",
+        "fullName": "迟到刷新成员",
+        "primaryRole": "employee",
+        "accountStatus": "approved",
+        "membershipStatus": "approved",
+    }
+    workspace = create_sandbox(
+        db,
+        kind="organization",
+        name="迟到刷新组织",
+        cloud_api_url="https://stale-refresh.example.test",
+    )
+    db.execute(
+        "UPDATE sandboxes SET organization_id = ?, cloud_instance_id = ?, identity_state = 'verified' WHERE id = ?",
+        ("org-stale-refresh", "cloud-stale-refresh", workspace.id),
+    )
+    for key, value in (
+        ("cloud_access_token", "expired-access"),
+        ("cloud_refresh_token", "refresh-1"),
+        ("cloud_session_user", json.dumps(user_payload, ensure_ascii=False)),
+        ("cloud_session_user_snapshot", json.dumps(user_payload, ensure_ascii=False)),
+    ):
+        set_sandbox_setting(db, workspace.id, key, value)
+    assert client.post(f"/api/v1/workspaces/{workspace.id}/activate").status_code == 200
+    serialized_user = json.dumps(user_payload, ensure_ascii=False)
+
+    def fake_request(method: str, url: str, json=None, headers=None, timeout=None, trust_env=None):
+        if url.endswith("/api/v1/auth/me"):
+            authorization = (headers or {}).get("Authorization")
+            if authorization == "Bearer expired-access":
+                return httpx.Response(401, json={"detail": "expired"})
+            if authorization == "Bearer fresh-access":
+                return httpx.Response(200, json=user_payload)
+        if url.endswith("/api/v1/auth/refresh"):
+            assert json == {"refreshToken": "refresh-1"}
+            # Simulate another execution context completing token rotation
+            # before this stale request receives its 401 response.
+            for key, value in (
+                ("cloud_access_token", "fresh-access"),
+                ("cloud_refresh_token", "refresh-2"),
+                ("cloud_session_user", serialized_user),
+            ):
+                set_sandbox_setting(db, workspace.id, key, value)
+            return httpx.Response(401, json={"detail": "stale refresh token"})
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_request)
+    response = client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "fresh-access"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-2"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user", ""))["organizationId"] == "org-stale-refresh"
+    client.__exit__(None, None, None)
+
+
+def test_late_unauthorized_response_cannot_clear_newer_session(tmp_path: Path, monkeypatch):
+    client = make_client(tmp_path)
+    db = client.app.state.app_state.db
+    user_payload = {
+        "id": "user-late-unauthorized",
+        "organizationId": "org-late-unauthorized",
+        "organizationName": "迟到响应组织",
+        "email": "late-unauthorized@example.test",
+        "fullName": "迟到响应成员",
+        "primaryRole": "employee",
+        "accountStatus": "approved",
+        "membershipStatus": "approved",
+    }
+    serialized_user = json.dumps(user_payload, ensure_ascii=False)
+    workspace = create_sandbox(
+        db,
+        kind="organization",
+        name="迟到响应组织",
+        cloud_api_url="https://late-unauthorized.example.test",
+    )
+    db.execute(
+        "UPDATE sandboxes SET organization_id = ?, cloud_instance_id = ?, identity_state = 'verified' WHERE id = ?",
+        ("org-late-unauthorized", "cloud-late-unauthorized", workspace.id),
+    )
+    for key, value in (
+        ("cloud_access_token", "access-1"),
+        ("cloud_refresh_token", "refresh-1"),
+        ("cloud_session_user", serialized_user),
+        ("cloud_session_user_snapshot", serialized_user),
+    ):
+        set_sandbox_setting(db, workspace.id, key, value)
+    assert client.post(f"/api/v1/workspaces/{workspace.id}/activate").status_code == 200
+
+    def fake_request(method: str, url: str, json=None, headers=None, timeout=None, trust_env=None):
+        if url.endswith("/api/v1/auth/me"):
+            authorization = (headers or {}).get("Authorization")
+            if authorization == "Bearer access-1":
+                return httpx.Response(401, json={"detail": "expired"})
+            if authorization == "Bearer access-2":
+                # A different execution context rotates the session while this
+                # request is in flight; its late 401 must not clear access-3.
+                for key, value in (
+                    ("cloud_access_token", "access-3"),
+                    ("cloud_refresh_token", "refresh-3"),
+                    ("cloud_session_user", serialized_user),
+                ):
+                    set_sandbox_setting(db, workspace.id, key, value)
+                return httpx.Response(401, json={"detail": "late unauthorized"})
+            if authorization == "Bearer access-3":
+                return httpx.Response(200, json=user_payload)
+        if url.endswith("/api/v1/auth/refresh"):
+            assert json == {"refreshToken": "refresh-1"}
+            return httpx.Response(
+                200,
+                json={
+                    "accessToken": "access-2",
+                    "refreshToken": "refresh-2",
+                    "user": user_payload,
+                },
+            )
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(app_main.httpx, "request", fake_request)
+    response = client.get("/api/v1/auth/me")
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert get_active_sandbox_setting(db, "cloud_access_token", "") == "access-3"
+    assert get_active_sandbox_setting(db, "cloud_refresh_token", "") == "refresh-3"
+    assert json.loads(get_active_sandbox_setting(db, "cloud_session_user", ""))["organizationId"] == "org-late-unauthorized"
+    client.__exit__(None, None, None)
 
 
 def test_restart_uses_active_workspace_cloud_instead_of_bootstrap_env(tmp_path: Path, monkeypatch) -> None:
