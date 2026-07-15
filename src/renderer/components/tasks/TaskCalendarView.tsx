@@ -1533,59 +1533,102 @@ export function TaskCalendarView({
                               return (
                                 <div
                                   key={`bar-${lane}-${slot.task.id}`}
-                                  data-no-month-range-drag="true"
-                                  role="button"
-                                  tabIndex={0}
-                                  title={slot.task.title}
-                                  draggable={!isLocalDraftTaskId(slot.task.id)}
-                                  onMouseDown={(event) => event.stopPropagation()}
-                                  onDragStart={(event) => {
-                                    event.stopPropagation();
-                                    if (isLocalDraftTaskId(slot.task.id)) {
-                                      event.preventDefault();
-                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
-                                      return;
-                                    }
-                                    // 跨天条拖拽：落到哪个日格，哪天就是任务的起始日（duration 保留，结束随之顺移）
-                                    event.dataTransfer.effectAllowed = 'move';
-                                    event.dataTransfer.setData('text/plain', slot.task.id);
-                                    dragDropHandledRef.current = false;
-                                    setDraggingTaskId(slot.task.id);
-                                  }}
-                                  onDragEnd={() => {
-                                    if (!dragDropHandledRef.current) {
-                                      setDraggingTaskId(null);
-                                      setDragTargetDay(null);
-                                    }
-                                    dragDropHandledRef.current = false;
-                                  }}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    if (isLocalDraftTaskId(slot.task.id)) {
-                                      onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
-                                      return;
-                                    }
-                                    onOpenTaskEditor(slot.task);
-                                  }}
-                                  onKeyDown={(event) => {
-                                    if (event.key === 'Enter' || event.key === ' ') {
-                                      event.preventDefault();
-                                      onOpenTaskEditor(slot.task);
-                                    }
-                                  }}
-                                  className={`-mx-2.5 flex items-center gap-0.5 overflow-hidden whitespace-nowrap border-y px-2 text-[11px] font-semibold leading-none ${isLocalDraftTaskId(slot.task.id) ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${draggingTaskId === slot.task.id ? 'opacity-50' : ''} ${slot.roundLeft ? 'rounded-l-md border-l' : ''} ${slot.roundRight ? 'rounded-r-md border-r' : ''} ${slot.task.status === 'done' ? 'line-through' : ''}`}
-                                  style={{ height: MONTH_MULTIDAY_BAR_HEIGHT, color: barStyle.color, backgroundColor: barStyle.backgroundColor, borderColor: barStyle.borderColor }}
+                                  className="relative -mx-2.5"
+                                  style={{ height: MONTH_MULTIDAY_BAR_HEIGHT, color: barStyle.color }}
                                 >
-                                  {slot.continuesLeft && (
-                                    <ChevronLeft size={10} strokeWidth={2.5} className="shrink-0 opacity-70" aria-hidden="true" />
-                                  )}
-                                  {slot.showTitle ? (
-                                    <span className="overflow-hidden text-ellipsis">{slot.task.title}</span>
-                                  ) : (
-                                    <span className="flex-1" aria-hidden="true" />
-                                  )}
-                                  {slot.continuesRight && (
-                                    <ChevronRight size={10} strokeWidth={2.5} className="ml-auto shrink-0 opacity-70" aria-hidden="true" />
+                                  <div
+                                    data-no-month-range-drag="true"
+                                    role="button"
+                                    tabIndex={0}
+                                    title={slot.task.title}
+                                    draggable={!isLocalDraftTaskId(slot.task.id)}
+                                    onMouseDown={(event) => event.stopPropagation()}
+                                    onDragStart={(event) => {
+                                      event.stopPropagation();
+                                      if (isLocalDraftTaskId(slot.task.id)) {
+                                        event.preventDefault();
+                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                        return;
+                                      }
+                                      // 跨天条拖拽：落到哪个日格，哪天就是任务的起始日（duration 保留，结束随之顺移）
+                                      event.dataTransfer.effectAllowed = 'move';
+                                      event.dataTransfer.setData('text/plain', slot.task.id);
+                                      dragDropHandledRef.current = false;
+                                      setDraggingTaskId(slot.task.id);
+                                    }}
+                                    onDragEnd={() => {
+                                      if (!dragDropHandledRef.current) {
+                                        setDraggingTaskId(null);
+                                        setDragTargetDay(null);
+                                      }
+                                      dragDropHandledRef.current = false;
+                                    }}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      if (isLocalDraftTaskId(slot.task.id)) {
+                                        onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                        return;
+                                      }
+                                      onOpenTaskEditor(slot.task);
+                                    }}
+                                    onKeyDown={(event) => {
+                                      event.stopPropagation();
+                                      if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        if (isLocalDraftTaskId(slot.task.id)) {
+                                          onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                          return;
+                                        }
+                                        onOpenTaskEditor(slot.task);
+                                      }
+                                    }}
+                                    className={`flex h-full items-center gap-0.5 overflow-hidden whitespace-nowrap border-y px-2 text-[11px] font-semibold leading-none ${isLocalDraftTaskId(slot.task.id) ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'} ${draggingTaskId === slot.task.id ? 'opacity-50' : ''} ${slot.roundLeft ? 'rounded-l-md border-l' : ''} ${slot.roundRight ? 'rounded-r-md border-r' : ''}`}
+                                    style={{ backgroundColor: barStyle.backgroundColor, borderColor: barStyle.borderColor }}
+                                  >
+                                    {slot.continuesLeft && (
+                                      <ChevronLeft size={10} strokeWidth={2.5} className="shrink-0 opacity-70" aria-hidden="true" />
+                                    )}
+                                    {slot.showTitle ? (
+                                      <span className={`min-w-0 flex-1 overflow-hidden text-ellipsis pl-5 ${slot.task.status === 'done' ? 'line-through' : ''}`}>
+                                        {slot.task.title}
+                                      </span>
+                                    ) : (
+                                      <span className="flex-1" aria-hidden="true" />
+                                    )}
+                                    {slot.continuesRight && (
+                                      <ChevronRight size={10} strokeWidth={2.5} className="ml-auto shrink-0 opacity-70" aria-hidden="true" />
+                                    )}
+                                  </div>
+                                  {slot.showTitle && (
+                                    <button
+                                      type="button"
+                                      draggable={false}
+                                      data-no-month-range-drag="true"
+                                      className={`absolute top-1/2 z-10 flex h-3.5 w-3.5 -translate-y-1/2 items-center justify-center rounded-[4px] border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#5B7BFE] focus-visible:ring-offset-1 ${slot.continuesLeft ? 'left-5' : 'left-2'} ${
+                                        slot.task.status === 'done'
+                                          ? 'border-[#CBD5E1] bg-[#CBD5E1] text-white'
+                                          : 'border-current bg-white/85 hover:bg-white'
+                                      }`}
+                                      onMouseDown={(event) => {
+                                        event.stopPropagation();
+                                      }}
+                                      onKeyDown={(event) => {
+                                        event.stopPropagation();
+                                      }}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (isLocalDraftTaskId(slot.task.id)) {
+                                          onCalendarNotice?.('info', LOCAL_DRAFT_NOTICE);
+                                          return;
+                                        }
+                                        void onToggleTaskStatus(slot.task.id);
+                                      }}
+                                      title={slot.task.status === 'done' ? '取消完成' : '标记完成'}
+                                      aria-label={slot.task.status === 'done' ? `取消完成 ${slot.task.title}` : `完成 ${slot.task.title}`}
+                                      aria-pressed={slot.task.status === 'done'}
+                                    >
+                                      {slot.task.status === 'done' ? <Check size={10} strokeWidth={3} /> : null}
+                                    </button>
                                   )}
                                 </div>
                               );
