@@ -1,14 +1,23 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import sys
+import time
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from app import main as cloud_main  # noqa: E402
 from app.main import DEFAULT_ORG_ID, create_app, now_iso  # noqa: E402
+
+
+def _is_scope_classifier(chat_payload: dict) -> bool:
+    messages = chat_payload.get("messages") or []
+    return bool(messages and "只输出一个词：IN 或 OUT" in str(messages[0].get("content", "")))
 
 
 def _set_seed_env(tmp_path: Path, monkeypatch) -> None:
@@ -57,6 +66,43 @@ def _insert_empty_client(
         (client_id, DEFAULT_ORG_ID, client_name, timestamp, timestamp),
     )
     return client_id, client_name
+
+
+def _insert_client_dna(app, client_id: str) -> None:
+    timestamp = now_iso()
+    app.state.app_state.db.execute(
+        """
+        INSERT INTO cloud_client_dna_summaries(
+            id, organization_id, client_id, source_type, source_id, snapshot_version,
+            snapshot_hash, payload_json, evidence_refs_json, updated_at, published_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"dna_{client_id}",
+            DEFAULT_ORG_ID,
+            client_id,
+            "client_dna",
+            f"{client_id}:dna:v1",
+            1,
+            "dna-test-hash",
+            json.dumps(
+                {
+                    "summary": "该客户正在推进年度计划并明确重点工作。",
+                    "modules": [
+                        {
+                            "moduleKey": "organization_intro",
+                            "title": "组织介绍",
+                            "summary": "该客户是一家正在推进组织升级的公益机构。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            "[]",
+            timestamp,
+            timestamp,
+        ),
+    )
 
 
 def test_mobile_capabilities_and_openapi_contract(tmp_path: Path, monkeypatch) -> None:
@@ -118,13 +164,13 @@ def test_thin_context_chat_returns_limited_context_metadata(tmp_path: Path, monk
     monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
     captured: dict[str, object] = {}
 
-    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
         assert api_key == "org-test-key"
         assert base_url == "https://models.example.com/v1"
         captured["systemPrompt"] = chat_payload["messages"][0]["content"]
         return "当前已知事实：只锁定了客户名，缺少工作台、DNA、会议和战略判断资料。"
 
-    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
     app = create_app()
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
@@ -246,13 +292,13 @@ def test_chat_folds_understanding_into_context_and_evidence(tmp_path: Path, monk
     monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
     captured: dict[str, object] = {}
 
-    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
         assert api_key == "org-test-key"
         assert base_url == "https://models.example.com/v1"
         captured["systemPrompt"] = chat_payload["messages"][0]["content"]
         return "理解快照已读取，按已有结构化知识作答。"
 
-    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
     app = create_app()
     client_id, client_name = _insert_empty_client(
         app, client_id="client_understanding_chat", client_name="理解链路客户"
@@ -285,13 +331,13 @@ def test_chat_out_of_scope_question_is_refused(tmp_path: Path, monkeypatch) -> N
     _set_seed_env(tmp_path, monkeypatch)
     monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
 
-    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
         assert api_key == "org-test-key"
         assert base_url == "https://models.example.com/v1"
         # 模拟分类器判定 OUT; 若闸门生效, 主答案调用不应发生(out_of_scope 短路)
         return "OUT"
 
-    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
     app = create_app()
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
@@ -315,12 +361,12 @@ def test_chat_in_scope_question_not_gated(tmp_path: Path, monkeypatch) -> None:
     _set_seed_env(tmp_path, monkeypatch)
     monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
 
-    def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
         assert api_key == "org-test-key"
         assert base_url == "https://models.example.com/v1"
         return "IN"
 
-    monkeypatch.setattr(cloud_main, "_sync_qwen_chat", fake_qwen_chat)
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
     app = create_app()
     client_id, client_name = _insert_empty_client(app)
     client = TestClient(app)
@@ -334,3 +380,293 @@ def test_chat_in_scope_question_not_gated(tmp_path: Path, monkeypatch) -> None:
     )
     assert response.status_code == 200, response.text
     assert response.json()["answerMode"] != "out_of_scope"
+
+
+def test_chat_timeout_retries_once_with_compact_non_thinking_payload(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ARK_API_KEY", "poison-global-key")
+    calls: list[tuple[dict, object]] = []
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        assert api_key == "org-test-key"
+        assert base_url == "https://models.example.com/v1"
+        calls.append((chat_payload, timeout))
+        if _is_scope_classifier(chat_payload):
+            return "IN"
+        if len([payload for payload, _ in calls if not _is_scope_classifier(payload)]) == 1:
+            raise httpx.ReadTimeout("simulated provider read timeout")
+        return "当前核心工作是聚焦重点任务、核实风险并明确下一步。"
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请结合当前任务板和已有资料，分析这个客户现阶段的核心工作、主要风险以及下一步行动建议。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在推进年度计划，并核对关键责任人。",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] == "当前核心工作是聚焦重点任务、核实风险并明确下一步。"
+    answer_calls = [(payload, timeout) for payload, timeout in calls if not _is_scope_classifier(payload)]
+    assert len(answer_calls) == 2
+    primary_payload, primary_timeout = answer_calls[0]
+    fallback_payload, fallback_timeout = answer_calls[1]
+    assert calls[0][1].read <= 5.0
+    assert primary_payload is not fallback_payload
+    assert primary_payload["enable_thinking"] is False
+    assert primary_payload["max_tokens"] <= 560
+    assert primary_timeout.read <= 24.0
+    assert "超时降级" not in primary_payload["messages"][0]["content"]
+    assert fallback_payload["enable_thinking"] is False
+    assert fallback_payload["max_tokens"] <= 220
+    assert fallback_timeout.read <= 10.0
+    assert "超时降级" in fallback_payload["messages"][0]["content"]
+    assert "140 字以内" in fallback_payload["messages"][0]["content"]
+
+
+def test_intro_chat_with_client_dna_uses_mobile_safe_primary_budget(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    calls: list[tuple[dict, object]] = []
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        calls.append((chat_payload, timeout))
+        if _is_scope_classifier(chat_payload):
+            return "IN"
+        return "该客户正在推进组织升级与年度重点工作。"
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app, client_id="client_intro_budget", client_name="介绍预算客户")
+    _insert_client_dna(app, client_id)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={"message": "请介绍这个客户", "clientId": client_id, "clientName": client_name},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    answer_calls = [(payload, timeout) for payload, timeout in calls if not _is_scope_classifier(payload)]
+    assert len(answer_calls) == 1
+    payload, timeout = answer_calls[0]
+    assert payload["enable_thinking"] is False
+    assert payload["max_tokens"] <= 420
+    assert timeout.read <= 24.0
+
+
+def test_chat_second_timeout_returns_mobile_compatible_504(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    answer_call_count = 0
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        nonlocal answer_call_count
+        if _is_scope_classifier(chat_payload):
+            return "IN"
+        answer_call_count += 1
+        raise httpx.ReadTimeout("simulated provider read timeout")
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请分析当前工作重点并给出下一步建议。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在核对重点任务。",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 504, response.text
+    assert "超时" in response.json()["detail"]
+    assert answer_call_count == 2
+
+
+def test_chat_enforces_absolute_deadline_before_mobile_abort(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cloud_main, "CONSULTATION_TOTAL_DEADLINE_SECONDS", 0.50)
+    classifier_cancelled = [False]
+
+    async def slow_classifier(*args, **kwargs):  # noqa: ANN002, ANN003
+        try:
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            classifier_cancelled[0] = True
+            raise
+        return None
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        return "不应到达模型调用"
+
+    monkeypatch.setattr(cloud_main, "_classify_consultation_out_of_scope", slow_classifier)
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    started = time.monotonic()
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请分析当前工作重点并给出下一步建议。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在核对重点任务。",
+        },
+        headers=headers,
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504, response.text
+    assert "超时" in response.json()["detail"]
+    assert classifier_cancelled[0] is True
+    assert elapsed < 0.90
+    assert cloud_main.CONSULTATION_TOTAL_DEADLINE_SECONDS < 45.0
+
+
+def test_classifier_timeout_keeps_scope_guard_in_answer_prompt(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    captured: dict[str, str] = {}
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        if _is_scope_classifier(chat_payload):
+            raise TimeoutError("simulated classifier deadline")
+        captured["systemPrompt"] = str(chat_payload["messages"][0]["content"])
+        return "当前应先核对重点任务。"
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请分析当前工作重点。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在核对重点任务。",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert "项目边界降级守护" in captured["systemPrompt"]
+    assert "其他客户" in captured["systemPrompt"]
+
+
+def test_chat_upstream_504_retries_once(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    answer_call_count = 0
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        nonlocal answer_call_count
+        if _is_scope_classifier(chat_payload):
+            return "IN"
+        answer_call_count += 1
+        if answer_call_count == 1:
+            request = httpx.Request("POST", "https://models.example.com/v1/chat/completions")
+            upstream = httpx.Response(504, request=request)
+            raise httpx.HTTPStatusError("upstream timeout", request=request, response=upstream)
+        return "已通过紧凑模式恢复回答。"
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请分析当前工作重点。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在核对重点任务。",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["reply"] == "已通过紧凑模式恢复回答。"
+    assert answer_call_count == 2
+
+
+def test_consultation_retryable_timeout_matrix() -> None:
+    request = httpx.Request("POST", "https://models.example.com/v1/chat/completions")
+
+    for error in (
+        TimeoutError("wall deadline"),
+        httpx.ConnectTimeout("connect", request=request),
+        httpx.ReadTimeout("read", request=request),
+        httpx.PoolTimeout("pool", request=request),
+    ):
+        assert cloud_main._is_retryable_consultation_timeout(error) is True
+
+    assert cloud_main._is_retryable_consultation_timeout(
+        httpx.WriteTimeout("write", request=request),
+    ) is False
+
+    for status_code, expected in ((408, True), (504, True), (401, False), (429, False), (500, False)):
+        upstream = httpx.Response(status_code, request=request)
+        error = httpx.HTTPStatusError("upstream", request=request, response=upstream)
+        assert cloud_main._is_retryable_consultation_timeout(error) is expected
+
+
+def test_chat_non_timeout_provider_error_is_not_retried(tmp_path: Path, monkeypatch) -> None:
+    _set_seed_env(tmp_path, monkeypatch)
+    answer_call_count = 0
+
+    async def fake_qwen_chat(api_key, chat_payload, timeout, *, base_url):  # noqa: ANN001
+        nonlocal answer_call_count
+        if _is_scope_classifier(chat_payload):
+            return "IN"
+        answer_call_count += 1
+        request = httpx.Request("POST", "https://models.example.com/v1/chat/completions")
+        upstream = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("unauthorized", request=request, response=upstream)
+
+    monkeypatch.setattr(cloud_main, "_async_qwen_chat", fake_qwen_chat)
+    app = create_app()
+    client_id, client_name = _insert_empty_client(app)
+    client = TestClient(app)
+    headers = _auth_headers(client)
+    _configure_org_ai(client, headers)
+
+    response = client.post(
+        "/api/v1/consultation/chat",
+        json={
+            "message": "请分析当前工作重点。",
+            "clientId": client_id,
+            "clientName": client_name,
+            "taskBoardContext": "正在核对重点任务。",
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 502, response.text
+    assert answer_call_count == 1

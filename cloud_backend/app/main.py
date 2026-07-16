@@ -15882,21 +15882,95 @@ def _sync_qwen_chat(api_key: str, payload: dict, timeout: object, *, base_url: s
     return text.strip()
 
 
-def _classify_consultation_out_of_scope(
+async def _async_qwen_chat(api_key: str, payload: dict, timeout: object, *, base_url: str) -> str:
+    """Native async LLM call so an outer wall-clock deadline can cancel I/O."""
+    import httpx
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            _chat_completions_endpoint(base_url),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        response.raise_for_status()
+        result = response.json()
+    text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not text:
+        return "抱歉，AI 未能生成有效回复，请稍后重试。"
+    return text.strip()
+
+
+# The installed mobile client aborts the entire request at 45 seconds. Keep a
+# seven-second transport/serialization margin and cap every provider stage with
+# both a shared absolute deadline and an individual wall-clock budget.
+CONSULTATION_TOTAL_DEADLINE_SECONDS = 38.0
+CONSULTATION_CLASSIFIER_BUDGET_SECONDS = 3.0
+CONSULTATION_PRIMARY_BUDGET_SECONDS = 22.0
+CONSULTATION_FALLBACK_BUDGET_SECONDS = 10.0
+
+
+async def _call_consultation_qwen_chat(
+    api_key: str,
+    payload: dict,
+    *,
+    base_url: str,
+    request_deadline: float,
+    stage_budget: float,
+) -> str:
+    """Call the provider within both the stage and shared request deadlines."""
+    import httpx
+
+    loop = asyncio.get_running_loop()
+    stage_deadline = min(request_deadline, loop.time() + float(stage_budget))
+    wall_budget = stage_deadline - loop.time()
+    if wall_budget <= 0:
+        raise TimeoutError("consultation request deadline exhausted")
+
+    # httpx phase timeouts remain useful for diagnostics and stalled sockets;
+    # asyncio.timeout_at below is the actual wall-clock deadline.
+    timeout = httpx.Timeout(
+        timeout=wall_budget,
+        connect=min(3.0, wall_budget),
+        read=wall_budget,
+        write=min(3.0, wall_budget),
+        pool=min(2.0, wall_budget),
+    )
+    async with asyncio.timeout_at(stage_deadline):
+        return await _async_qwen_chat(api_key, payload, timeout, base_url=base_url)
+
+
+def _is_retryable_consultation_timeout(error: Exception) -> bool:
+    """Return whether a failed consultation call is safe to retry once."""
+    import httpx
+
+    if isinstance(error, (TimeoutError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout)):
+        return True
+    if isinstance(error, httpx.HTTPStatusError):
+        return error.response.status_code in {408, 504}
+    # Deliberately exclude WriteTimeout: the upstream may have received a
+    # partial/full request, so retrying can duplicate generation and billing.
+    return False
+
+
+async def _classify_consultation_out_of_scope(
     api_key: str,
     model_name: str,
     base_url: str,
     message: str,
     client_name: str,
-) -> bool:
+    *,
+    request_deadline: float,
+) -> bool | None:
     """项目边界轻量判定：用户问题是否跑出当前客户/项目范围。
 
-    返回 True = out-of-scope（应拒答）。任何异常或空输入一律 fail-open 返回 False
-    （即不拦截、按正常流程作答），确保该闸门绝不影响正常问答主流程。
+    返回 True = out-of-scope，False = in-scope，None = 分类不可用。调用方在
+    None 时把边界约束下沉到答案提示词，避免慢分类器静默关闭项目边界。
     """
     if not api_key or not message.strip() or not client_name:
-        return False
-    import httpx
+        return None
 
     prompt = (
         f"当前咨询锁定的客户/项目是「{client_name}」。\n"
@@ -15917,12 +15991,18 @@ def _classify_consultation_out_of_scope(
         "stream": False,
         "enable_thinking": False,
     }
-    timeout = httpx.Timeout(timeout=None, connect=6.0, read=12.0, write=6.0, pool=6.0)
     try:
-        verdict = _sync_qwen_chat(api_key, payload, timeout, base_url=base_url) or ""
+        verdict = await _call_consultation_qwen_chat(
+            api_key,
+            payload,
+            base_url=base_url,
+            request_deadline=request_deadline,
+            stage_budget=CONSULTATION_CLASSIFIER_BUDGET_SECONDS,
+        ) or ""
         return verdict.strip().upper().startswith("OUT")
-    except Exception:
-        return False
+    except Exception as error:
+        logger.warning("[ai-chat] scope classifier unavailable (%s)", type(error).__name__)
+        return None
 
 
 def _generate_recording_summary(
@@ -21005,10 +21085,11 @@ def create_app() -> FastAPI:
 
     # ── Consultation Chat (real AI) ─────────────────
 
-    @app.post("/api/v1/consultation/chat", response_model=ConsultationChatResponse)
-    async def consultation_chat(
+    async def _consultation_chat_impl(
         payload: ConsultationChatPayload,
-        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+        current_user: SessionUser,
+        *,
+        request_deadline: float,
     ) -> ConsultationChatResponse:
         ai_config = _org_ai_runtime_config_or_503(state, current_user.organizationId)
         api_key = ai_config.api_key
@@ -21683,17 +21764,22 @@ def create_app() -> FastAPI:
         model_name = ai_config.model
 
         # 项目边界闸门(P0): 有客户上下文、但问题跑题(问别的客户/与项目无关闲聊)→ out_of_scope,
-        # 直接拒答、不调主 LLM 编答案、不标 grounded/rich。分类调用 fail-open(异常→正常作答)。
+        # 直接拒答、不调主 LLM 编答案、不标 grounded/rich。分类不可用时把同一边界
+        # 下沉进答案提示词，避免为满足移动端时限而静默关闭安全边界。
         out_of_scope_reply: str | None = None
+        scope_guard_degraded = False
         if answer_mode in ("grounded", "limited_context") and resolved_client_name:
-            if await asyncio.to_thread(
-                _classify_consultation_out_of_scope,
+            scope_verdict = await _classify_consultation_out_of_scope(
                 api_key,
                 model_name,
                 ai_config.base_url,
                 normalized_message,
                 resolved_client_name,
-            ):
+                request_deadline=request_deadline,
+            )
+            if scope_verdict is None:
+                scope_guard_degraded = True
+            elif scope_verdict:
                 answer_mode = "out_of_scope"
                 out_of_scope_reply = (
                     f"这个问题看起来不在当前「{resolved_client_name}」项目的范围内。"
@@ -21701,7 +21787,6 @@ def create_app() -> FastAPI:
                     "如果你想问的是别的客户或别的主题，请先在上方切换到对应的客户 / 项目，再问一次。"
                 )
 
-        import httpx
         terse_request = "只回答" in payload.message or len(normalized_message) <= 40
         # Role boundary: prevent confusing consultant team with client team
         role_boundary = (
@@ -21712,6 +21797,13 @@ def create_app() -> FastAPI:
             "- 绝对不要把益语智库的人名（如顾源源）、益语智库的业务介绍当成客户本身的信息。\n"
             "- 如果资料中出现益语智库团队成员参与客户工作的描述，要明确区分：谁是顾问方的人，谁是客户方的人。\n"
         )
+        if scope_guard_degraded:
+            role_boundary += (
+                "\n【项目边界降级守护 — 严格遵守】\n"
+                "- 边界分类器本次不可用，只能基于当前选定客户和项目资料回答。\n"
+                "- 如果问题明显涉及其他客户，或属于美食、天气、旅游、娱乐等非工作闲聊，"
+                "必须拒绝回答并提示用户先切换客户或主题；不得跨项目推断。\n"
+            )
 
         known_facts_text = "\n".join(context_parts) if context_parts else "当前没有已知事实。"
         missing_sources_text = "\n".join(f"- {item.message}" for item in missing_context) or "- 当前没有额外缺口。"
@@ -21818,6 +21910,16 @@ def create_app() -> FastAPI:
                 system_prompt += knowledge_context
             user_prompt = normalized_message
         if answer_mode not in ("missing_context", "out_of_scope"):
+            # Consultation is interactive and the installed mobile client has
+            # a 45 second request deadline. Deep thinking plus 2k output tokens
+            # regularly exceeded the provider/read budget. Keep the primary
+            # response useful but bounded, then use one compact retry only for
+            # safe timeout categories.
+            primary_max_tokens = 420 if (intro_request or terse_request) else 560
+            system_prompt += (
+                "\n\n【移动端篇幅】优先给出可直接行动的结论，正文控制在 400 字以内；"
+                "信息较多时只保留最关键的事实、风险和下一步。"
+            )
             chat_payload = {
                 "model": model_name,
                 "messages": [
@@ -21826,24 +21928,58 @@ def create_app() -> FastAPI:
                 ],
                 "temperature": 0.35 if answer_mode == "limited_context" else 0.5,
                 "top_p": 0.95,
-                "max_tokens": 2000 if (has_client_knowledge and intro_request) else (700 if terse_request else 2200),
+                "max_tokens": primary_max_tokens,
                 "stream": False,
-                "enable_thinking": True,
+                "enable_thinking": False,
             }
-            read_timeout = 60.0 if (has_client_knowledge and intro_request) else 30.0
-            timeout = httpx.Timeout(timeout=None, connect=8.0, read=read_timeout, write=8.0, pool=8.0)
             try:
-                response = await asyncio.to_thread(
-                    _sync_qwen_chat,
+                response = await _call_consultation_qwen_chat(
                     api_key,
                     chat_payload,
-                    timeout,
                     base_url=ai_config.base_url,
+                    request_deadline=request_deadline,
+                    stage_budget=CONSULTATION_PRIMARY_BUDGET_SECONDS,
                 )
             except Exception as error:
-                # P1-9: 不把 LLM provider 错误 body 直接暴露给前端 (可能含 token / 内网 URL)
-                logger.exception("[ai-chat] qwen call failed")
-                raise HTTPException(status_code=502, detail="AI 回复失败,请稍后重试。") from None
+                if not _is_retryable_consultation_timeout(error):
+                    # P1-9: 不把 LLM provider 错误 body 直接暴露给前端 (可能含 token / 内网 URL)
+                    logger.exception("[ai-chat] qwen call failed")
+                    raise HTTPException(status_code=502, detail="AI 回复失败,请稍后重试。") from None
+                logger.warning(
+                    "[ai-chat] provider timeout; retrying compact response (%s)",
+                    type(error).__name__,
+                )
+                fallback_messages = [dict(message) for message in chat_payload["messages"]]
+                fallback_messages[0]["content"] = (
+                    str(fallback_messages[0]["content"])
+                    + "\n\n【超时降级】请直接给出结论和最关键依据，控制在 140 字以内；"
+                    "不要展开推演，不要复述问题。"
+                )
+                fallback_payload = {
+                    **chat_payload,
+                    "messages": fallback_messages,
+                    "temperature": 0.2,
+                    "max_tokens": 220,
+                    "enable_thinking": False,
+                }
+                try:
+                    response = await _call_consultation_qwen_chat(
+                        api_key,
+                        fallback_payload,
+                        base_url=ai_config.base_url,
+                        request_deadline=request_deadline,
+                        stage_budget=CONSULTATION_FALLBACK_BUDGET_SECONDS,
+                    )
+                except Exception as retry_error:
+                    if not _is_retryable_consultation_timeout(retry_error):
+                        # Do not expose provider bodies, prompts, keys or internal URLs.
+                        logger.exception("[ai-chat] compact retry failed")
+                        raise HTTPException(status_code=502, detail="AI 回复失败,请稍后重试。") from None
+                    logger.warning(
+                        "[ai-chat] compact retry timed out (%s)",
+                        type(retry_error).__name__,
+                    )
+                    raise HTTPException(status_code=504, detail="AI 回复超时，请稍后重试。") from None
 
         context_bundle_hash = hashlib.sha256(
             json.dumps(
@@ -21935,6 +22071,26 @@ def create_app() -> FastAPI:
             evidence=evidence[:8],
             missingContext=missing_context[:8],
         )
+
+    @app.post("/api/v1/consultation/chat", response_model=ConsultationChatResponse)
+    async def consultation_chat(
+        payload: ConsultationChatPayload,
+        current_user: SessionUser = Depends(lambda authorization=Header(default=None): _require_auth(app, authorization)),
+    ) -> ConsultationChatResponse:
+        request_deadline = asyncio.get_running_loop().time() + CONSULTATION_TOTAL_DEADLINE_SECONDS
+        deadline_guard = None
+        try:
+            async with asyncio.timeout_at(request_deadline) as deadline_guard:
+                return await _consultation_chat_impl(
+                    payload,
+                    current_user,
+                    request_deadline=request_deadline,
+                )
+        except TimeoutError:
+            if deadline_guard is not None and deadline_guard.expired():
+                logger.warning("[ai-chat] consultation request deadline expired")
+                raise HTTPException(status_code=504, detail="AI 回复超时，请稍后重试。") from None
+            raise
 
     @app.get("/api/public/smart-input-audio/{file_key}")
     def get_public_smart_input_audio(file_key: str) -> FileResponse:
