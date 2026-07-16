@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveBatchTask, appendUnmatchedToDesc, type BatchDirectories } from './batchTaskResolve';
-import { parseBatchTasks } from '../../shared/batchTaskParse';
+import { resolveBatchTask, appendUnmatchedToDesc, type BatchDirectories } from './batchTaskResolve.ts';
+import { parseBatchTasks } from '../../shared/batchTaskParse.ts';
 
 function make(raw: string, dirs: BatchDirectories) {
   return resolveBatchTask(parseBatchTasks(raw, 2026)[0], dirs);
@@ -20,13 +20,40 @@ test('精确命中: 客户/事件线/负责人', () => {
   assert.equal(rv.clientId, 'c_1');
   assert.equal(rv.eventLineId, 'e_1');
   assert.equal(rv.ownerId, 'emp_1');
-  assert.equal(rv.eventLineCreateName, null);
+  assert.equal(rv.eventLineUnmatchedName, null);
 });
 
-test('★不误配事件线: "715上线" vs 已有"上线" → 新建, 不挂错', () => {
+test('★不误配事件线: "715上线" vs 已有"上线" → 未匹配, 不自动新建', () => {
   const rv = make('标题：X\n日期：7/3\n事件线：715上线\n背景：y', D([], [{ id: 'e_x', name: '上线' }]));
   assert.equal(rv.eventLineId, null);
-  assert.equal(rv.eventLineCreateName, '715上线');
+  assert.equal(rv.eventLineUnmatchedName, '715上线');
+});
+
+test('★事件线括注是名称的一部分: 一期不能复用二期', () => {
+  const rv = make(
+    '标题：X\n日期：7/3\n事件线：长期建设（二期）\n背景：y',
+    D([], [{ id: 'e_phase_1', name: '长期建设（一期）' }]),
+  );
+  assert.equal(rv.eventLineId, null);
+  assert.equal(rv.eventLineUnmatchedName, '长期建设（二期）');
+});
+
+test('★已归档的同名事件线不能被批量导入静默复用', () => {
+  const rv = make(
+    '标题：X\n日期：7/3\n事件线：715上线\n背景：y',
+    D([], [{ id: 'e_archived', name: '715上线', status: 'archived' }]),
+  );
+  assert.equal(rv.eventLineId, null);
+  assert.equal(rv.eventLineUnmatchedName, '715上线');
+});
+
+test('★已完成的同名事件线不能被批量导入静默复用', () => {
+  const rv = make(
+    '标题：X\n日期：7/3\n事件线：715上线\n背景：y',
+    D([], [{ id: 'e_done', name: '715上线', status: 'done' }]),
+  );
+  assert.equal(rv.eventLineId, null);
+  assert.equal(rv.eventLineUnmatchedName, '715上线');
 });
 
 test('★不误指派人: 负责人"李伟" vs 名册"李伟明" → 落背景, 不指派错人', () => {

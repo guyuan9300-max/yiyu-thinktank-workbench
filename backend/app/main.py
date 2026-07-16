@@ -58,7 +58,7 @@ _assert_local_backend_host_is_loopback()
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, RLock, Thread
 from time import perf_counter
 from typing import Any, Callable, Literal, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
@@ -3723,6 +3723,27 @@ class _ApprovalRowR2(BaseModel):
 class _ApprovalDecisionBodyR2(BaseModel):
     decided_by: str
     note: str = ""
+
+
+def should_preserve_pending_event_line_archive(
+    *,
+    local_status: object,
+    local_sync_status: object,
+    local_pending_action: object,
+    incoming_status: object,
+) -> bool:
+    """Keep an offline archive intent from being undone by stale cloud data."""
+
+    normalized_local_status = str(local_status or "").strip().lower()
+    normalized_sync_status = str(local_sync_status or "").strip().lower()
+    normalized_pending_action = str(local_pending_action or "").strip().lower()
+    normalized_incoming_status = str(incoming_status or "").strip().lower()
+    return (
+        normalized_local_status == "archived"
+        and normalized_sync_status in {"pending", "syncing", "error"}
+        and normalized_pending_action == "archive"
+        and normalized_incoming_status not in {"archived", "done"}
+    )
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
@@ -11885,6 +11906,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 """,
                 (active_sandbox_id, cloud_id, cloud_id),
             )
+        incoming_status = str(
+            record.get("status")
+            or (existing["status"] if existing and existing["status"] else "")
+        ).strip()
+        if existing and should_preserve_pending_event_line_archive(
+            local_status=existing["status"],
+            local_sync_status=existing["sync_status"],
+            local_pending_action=existing["pending_sync_action"],
+            incoming_status=incoming_status,
+        ):
+            # The cloud may still be active while this device is logged out. Preserve
+            # the local archive intent so the next authenticated sync can finish it.
+            return str(existing["id"])
         local_event_line_id = str(existing["id"]) if existing and existing["id"] else (normalized_local_id or cloud_id)
         if not existing:
             id_owner = state.db.fetchone("SELECT sandbox_id FROM event_lines WHERE id = ?", (local_event_line_id,))
@@ -12022,7 +12056,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         _invalidate_event_line_snapshot_cache(local_event_line_id)
         return local_event_line_id
 
-    _event_line_sync_lock = Lock()
+    _event_line_sync_lock = RLock()
 
     def _event_line_cloud_payload_from_row(row, *, include_id: bool = False) -> dict[str, object | None]:
         local_id = str(row["id"])
@@ -12223,8 +12257,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             _mark_event_line_pending(local_event_line_id, pending_action, error, failed_payload)
             return False
 
-    def sync_pending_event_lines(limit: int = 10) -> int:
-        context = _capture_active_scoped_cloud_context()
+    def sync_pending_event_lines(
+        limit: int = 10,
+        *,
+        context: ScopedCloudContext | None = None,
+    ) -> int:
+        context = context or _capture_active_scoped_cloud_context()
         if context is None:
             return 0
         if not _event_line_sync_lock.acquire(blocking=False):
@@ -36975,6 +37013,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             fetch_membership=False,
         )
         _bind_current_local_identity_to_cloud(user, local_identity_before_cloud)
+        try:
+            # Push offline mutations before any bootstrap/list pull can replay an
+            # older cloud status over them. The batch that triggered this repair
+            # created 11 lines, so the previous default limit of 10 was unsafe.
+            sync_pending_event_lines(limit=100, context=auth_context)
+        except Exception as error:
+            print(f"[event-lines] pending sync after auth failed: {error}", file=sys.stderr)
         _sync_organization_bootstrap_after_auth(auth_context)
         Thread(
             target=lambda: _sync_org_ai_config_from_cloud(user, context=auth_context),
@@ -37584,24 +37629,29 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         active_sandbox_id = active_business_sandbox_id()
         scoped_context = _capture_active_scoped_cloud_context()
         if scoped_context is not None:
-            try:
-                _pull_cloud_clients_to_local(scoped_context)
-                response = scoped_cloud_request(scoped_context, "GET", "/api/v1/event-lines", timeout=6.0)
-                if not isinstance(response, list):
-                    raise HTTPException(status_code=502, detail="Invalid event line payload")
-                for item in response:
-                    if not isinstance(item, dict):
-                        continue
-                    record = _normalize_cloud_event_line_payload(item)
-                    if record and not _cloud_event_line_record_matches_sandbox(
-                        record,
-                        scoped_context.sandbox_id,
-                        expected_organization_id=scoped_context.organization_id,
-                    ):
-                        continue
-                    _upsert_cloud_event_line_shadow_local(item, target_sandbox_id=scoped_context.sandbox_id)
-            except HTTPException:
-                pass
+            pull_lock_acquired = _event_line_sync_lock.acquire(timeout=0.25)
+            if pull_lock_acquired:
+                try:
+                    sync_pending_event_lines(limit=100, context=scoped_context)
+                    _pull_cloud_clients_to_local(scoped_context)
+                    response = scoped_cloud_request(scoped_context, "GET", "/api/v1/event-lines", timeout=6.0)
+                    if not isinstance(response, list):
+                        raise HTTPException(status_code=502, detail="Invalid event line payload")
+                    for item in response:
+                        if not isinstance(item, dict):
+                            continue
+                        record = _normalize_cloud_event_line_payload(item)
+                        if record and not _cloud_event_line_record_matches_sandbox(
+                            record,
+                            scoped_context.sandbox_id,
+                            expected_organization_id=scoped_context.organization_id,
+                        ):
+                            continue
+                        _upsert_cloud_event_line_shadow_local(item, target_sandbox_id=scoped_context.sandbox_id)
+                except HTTPException:
+                    pass
+                finally:
+                    _event_line_sync_lock.release()
         rows = state.db.fetchall(
             """
             SELECT *
@@ -41990,30 +42040,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def close_event_line(event_line_id: str) -> dict:
         row = require_event_line_in_active_sandbox(event_line_id)
         local_event_line_id = str(row["id"])
-        if row and str(row["status"]) not in ("done", "archived"):
-            timestamp = now_iso()
-            state.db.execute(
-                """
-                UPDATE event_lines
-                SET status = 'archived',
-                    closed_at = ?,
-                    closed_by_user_id = ?,
-                    sync_status = CASE WHEN ? THEN 'syncing' ELSE sync_status END,
-                    pending_sync_action = CASE WHEN ? THEN 'archive' ELSE pending_sync_action END,
-                    last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    timestamp,
-                    current_operator_name(),
-                    1 if get_cloud_token() else 0,
-                    1 if get_cloud_token() else 0,
-                    1 if get_cloud_token() else 0,
-                    timestamp,
-                    local_event_line_id,
-                ),
-            )
+        was_open = str(row["status"] or "") not in ("done", "archived")
+        has_cloud = bool(get_cloud_token())
+        timestamp = now_iso()
+        state.db.execute(
+            """
+            UPDATE event_lines
+            SET status = 'archived',
+                closed_at = COALESCE(closed_at, ?),
+                closed_by_user_id = COALESCE(NULLIF(closed_by_user_id, ''), ?),
+                sync_status = CASE WHEN ? THEN 'syncing' ELSE 'pending' END,
+                pending_sync_action = 'archive',
+                last_sync_error = '',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                timestamp,
+                current_operator_name(),
+                1 if has_cloud else 0,
+                timestamp,
+                local_event_line_id,
+            ),
+        )
+        if was_open:
             _enqueue_workspace_refresh_safe(
                 client_id=str(row["primary_client_id"] or "").strip() or None,
                 source_type="event_line_close",
@@ -42023,7 +42073,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 scope_id=local_event_line_id,
                 priority="normal",
             )
-        if get_cloud_token():
+        if has_cloud:
             updated_row = state.db.fetchone(
                 "SELECT * FROM event_lines WHERE id = ? AND COALESCE(sandbox_id, '') = ?",
                 (local_event_line_id, active_business_sandbox_id()),
@@ -42044,13 +42094,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             SET status = 'active',
                 closed_at = NULL,
                 closed_by_user_id = NULL,
-                sync_status = CASE WHEN ? THEN 'syncing' ELSE sync_status END,
-                pending_sync_action = CASE WHEN ? THEN CASE WHEN cloud_id IS NULL OR cloud_id = '' THEN 'create' ELSE 'update' END ELSE pending_sync_action END,
-                last_sync_error = CASE WHEN ? THEN '' ELSE last_sync_error END,
+                sync_status = CASE WHEN ? THEN 'syncing' ELSE 'pending' END,
+                pending_sync_action = CASE WHEN cloud_id IS NULL OR cloud_id = '' THEN 'create' ELSE 'update' END,
+                last_sync_error = '',
                 updated_at = ?
             WHERE id = ?
             """,
-            (1 if has_cloud else 0, 1 if has_cloud else 0, 1 if has_cloud else 0, timestamp, local_event_line_id),
+            (1 if has_cloud else 0, timestamp, local_event_line_id),
         )
         _enqueue_workspace_refresh_safe(
             client_id=str(row["primary_client_id"] or "").strip() or None,

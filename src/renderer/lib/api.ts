@@ -5332,9 +5332,13 @@ export async function getEventLines() {
   return request<EventLine[]>('/api/v1/event-lines');
 }
 
-export async function createEventLine(payload: EventLineMutationPayload) {
+export async function createEventLine(
+  payload: EventLineMutationPayload,
+  options: { idempotencyKey?: string } = {},
+) {
   return request<EventLine>('/api/v1/event-lines', {
     method: 'POST',
+    headers: options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : undefined,
     body: JSON.stringify(payload),
   });
 }

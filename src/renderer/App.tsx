@@ -587,6 +587,7 @@ import { DepartmentSignalsView } from './components/weekly_review/DepartmentSign
 import { OrganizationSetupCenter } from './components/settings/OrganizationSetupCenter';
 import type { OrganizationSetupInputDraftState } from './components/settings/OrganizationSetupCenter';
 import { isLegacyOrganizationEmployee } from './lib/organizationEmployeeFilters';
+import { selectEventLinesForList } from './lib/eventLineVisibility';
 import { filterSharedTasks, isPersonalOnlyTask } from '../shared/taskVisibility';
 import {
   getTaskCalendarPlacement,
@@ -12720,6 +12721,7 @@ export default function App() {
     const projectStructureFailedAtRef = useRef<Record<string, number>>({});
     const elProjectDropdownRef = useRef<HTMLDivElement | null>(null);
     const [elProjectDropdownOpen, setElProjectDropdownOpen] = useState(false);
+    const [showArchivedEventLines, setShowArchivedEventLines] = useState(false);
     const [drillTaskViewOverride, setDrillTaskViewOverride] = useState<ReviewDashboardCardTarget | null>(null);
     const [activeReviewDrillTarget, setActiveReviewDrillTarget] = useState<ReviewDashboardDrillTargetResponse | null>(null);
     const [isLoadingReviewDrillTarget, setIsLoadingReviewDrillTarget] = useState(false);
@@ -13851,10 +13853,15 @@ export default function App() {
         .map(([id, label]) => ({ id, label }))
         .sort((left, right) => left.label.localeCompare(right.label, 'zh-Hans-CN'));
     }, [clients, sortedEventLines]);
-    const filteredEventLines = useMemo(() => {
-      if (eventLineProjectFilterId === '__all__') return sortedEventLines;
-      return sortedEventLines.filter((item) => (item.primaryClientId || '').trim() === eventLineProjectFilterId);
-    }, [eventLineProjectFilterId, sortedEventLines]);
+    const eventLineListSelection = useMemo(
+      () => selectEventLinesForList(sortedEventLines, eventLineProjectFilterId, showArchivedEventLines),
+      [eventLineProjectFilterId, showArchivedEventLines, sortedEventLines],
+    );
+    const filteredEventLines = eventLineListSelection.visible;
+    const archivedEventLineCount = eventLineListSelection.archivedCount;
+    useEffect(() => {
+      setShowArchivedEventLines(false);
+    }, [eventLineFilterStorageKey]);
     useEffect(() => {
       if (typeof window === 'undefined') return;
       if (eventLineProjectFilterId === '__all__') {
@@ -18445,12 +18452,33 @@ export default function App() {
                     {eventLinesLoading ? '正在同步当前工作空间事件线…' : (
                       <>
                         按项目聚合的事件线列表 · 共 <span className="text-gray-900 font-medium tabular-nums">{filteredEventLines.length}</span> 条
+                        {!showArchivedEventLines && archivedEventLineCount > 0 && (
+                          <> · 已隐藏 <span className="font-medium tabular-nums text-gray-500">{archivedEventLineCount}</span> 条归档</>
+                        )}
                       </>
                     )}
                   </p>
                 </div>
 
                 <div className="flex items-center gap-3">
+                  {archivedEventLineCount > 0 && (
+                    <button
+                      type="button"
+                      aria-pressed={showArchivedEventLines}
+                      onClick={() => setShowArchivedEventLines((visible) => !visible)}
+                      title={showArchivedEventLines ? '隐藏当前范围内已归档的事件线' : '显示当前范围内已归档的事件线'}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-[12px] font-medium text-gray-600 transition-all hover:border-gray-300 hover:bg-gray-50"
+                      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                    >
+                      {showArchivedEventLines
+                        ? <EyeOff size={12} strokeWidth={2.2} />
+                        : <Eye size={12} strokeWidth={2.2} />}
+                      <span>{showArchivedEventLines ? '隐藏已归档' : '显示已归档'}</span>
+                      <span className="rounded-md bg-gray-100 px-1 text-[10px] font-semibold tabular-nums text-gray-500">
+                        {archivedEventLineCount}
+                      </span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void loadEventLines({ resetFilter: true })}
@@ -18538,17 +18566,35 @@ export default function App() {
                     {eventLinesLoading ? <RefreshCw size={18} strokeWidth={1.8} className="animate-spin" /> : <GitMerge size={18} strokeWidth={1.5} />}
                   </div>
                   <p className="text-[14px] font-semibold text-gray-700">
-                    {eventLinesLoading ? '正在加载事件线' : eventLinesLoadError ? '加载失败' : '尚无事件线'}
+                    {eventLinesLoading
+                      ? '正在加载事件线'
+                      : eventLinesLoadError
+                        ? '加载失败'
+                        : (!showArchivedEventLines && archivedEventLineCount > 0 ? '当前事件线均已归档' : '尚无事件线')}
                   </p>
                   <p className="mt-3 max-w-md mx-auto text-[12px] leading-relaxed text-gray-400">
                     {eventLinesLoading
                       ? '正在从当前组织空间读取事件线，请稍候。'
-                      : eventLinesLoadError || (eventLineProjectFilterId === '__all__'
-                      ? '在创建任务时关联事件线，或在任务编辑器中新建事件线，事件线会自动出现在这里。'
-                      : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。')}
+                      : eventLinesLoadError
+                        ? eventLinesLoadError
+                        : (!showArchivedEventLines && archivedEventLineCount > 0
+                          ? `当前范围有 ${archivedEventLineCount} 条已归档事件线，默认隐藏；需要恢复时可重新显示并打开。`
+                          : (eventLineProjectFilterId === '__all__'
+                            ? '在创建任务时关联事件线，或在任务编辑器中新建事件线，事件线会自动出现在这里。'
+                            : '当前项目下还没有事件线。可先在任务编辑器里从任务新建事件线。'))}
                   </p>
                   {!eventLinesLoading && (
                     <div className="mt-5 flex justify-center gap-2">
+                      {!eventLinesLoadError && !showArchivedEventLines && archivedEventLineCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowArchivedEventLines(true)}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 text-[12px] font-medium text-gray-600 transition hover:bg-gray-50"
+                        >
+                          <Eye size={12} strokeWidth={2.2} />
+                          显示已归档事件线
+                        </button>
+                      )}
                       {eventLineProjectFilterId !== '__all__' && sortedEventLines.length > 0 && (
                         <button
                           type="button"

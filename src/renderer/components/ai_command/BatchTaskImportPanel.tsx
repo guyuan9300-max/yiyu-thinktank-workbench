@@ -10,7 +10,7 @@
 //   · 自带弹窗外壳 → AICommandModal 单条 quick_task 路径零改动(§M1)。
 // ============================================================
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { X, ArrowLeft, Loader2, CheckCircle2, Trash2, AlertCircle, ListPlus } from 'lucide-react';
 
 import { parseBatchTasks, type ParsedBatchTask } from '../../../shared/batchTaskParse';
@@ -20,9 +20,19 @@ import { buildTaskScheduleFromStartEnd } from '../../lib/taskTimeline';
 import {
   resolveBatchTask,
   appendUnmatchedToDesc,
+  isBatchReusableEventLineStatus,
   type BatchDirectories,
   type ResolvedBatchTask,
 } from '../../lib/batchTaskResolve';
+import {
+  appendUnmatchedEventLineToDesc,
+  buildBatchEventLineIdempotencyKey,
+  buildBatchEventLinePlan,
+  canSubmitBatchImport,
+  normalizeBatchEventLineName,
+  resolveEventLineIdForSave,
+  type EventLineDirectoryState,
+} from '../../lib/batchEventLinePlan';
 
 interface BatchTaskImportPanelProps {
   taskLists: Array<{ id: string; name: string }>;
@@ -58,6 +68,10 @@ const SAMPLE = `标题：赛夫提交第一轮选品建议
 优先级：高
 背景：把"积分不够可用现金补充/现金换积分"的技术开发优先级提到P0，直接影响转化。`;
 
+function newBatchImportSessionId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function BatchTaskImportPanel({
   taskLists,
   defaultListId,
@@ -74,6 +88,12 @@ export function BatchTaskImportPanel({
   const [outcome, setOutcome] = useState<SaveOutcome | null>(null);
   // 本地名册(客户/事件线/成员), 解析预览时加载一次。全部读本地表, 离线可用。
   const [dirs, setDirs] = useState<BatchDirectories>({ clients: [], eventLines: [], members: [] });
+  const [eventLineDirectoryState, setEventLineDirectoryState] = useState<EventLineDirectoryState>('loading');
+  const [eventLineDirectoryError, setEventLineDirectoryError] = useState<string | null>(null);
+  const [approvedEventLineNames, setApprovedEventLineNames] = useState<Set<string>>(new Set());
+  const [eventLineCreationConfirmed, setEventLineCreationConfirmed] = useState(false);
+  const directoryRequestEpochRef = useRef(0);
+  const importSessionIdRef = useRef('');
 
   const listId = defaultListId || taskLists[0]?.id || 'list-0';
 
@@ -84,33 +104,96 @@ export function BatchTaskImportPanel({
     rows.map((r) => [r.localId, resolveBatchTask(r, dirs)]),
   );
 
-  const handleParse = async () => {
-    setRows(parseBatchTasks(raw));
-    setStage('preview');
-    // 加载本地名册用于自动关联(失败也不阻塞, 未命中一律落背景)。
-    try {
-      const [clients, eventLines, members] = await Promise.all([
-        getClients().catch(() => []),
-        getEventLines().catch(() => []),
-        getMentionCandidates('').catch(() => []),
-      ]);
+  const eventLinePlan = buildBatchEventLinePlan(
+    validRows.map((r) => ({
+      eventLineName: r.eventLineName ?? null,
+      eventLineId: resolvedByLocalId.get(r.localId)?.eventLineId ?? null,
+    })),
+    approvedEventLineNames,
+    eventLineDirectoryState,
+  );
+  const reuseEventLines = eventLinePlan.filter((item) => item.decision === 'reuse');
+  const createEventLines = eventLinePlan.filter((item) => item.decision === 'create');
+  const unmatchedEventLines = eventLinePlan.filter((item) => item.decision === 'unmatched');
+  const canConfirmImport = validRows.length > 0 && canSubmitBatchImport(
+    eventLineDirectoryState,
+    eventLinePlan,
+    eventLineCreationConfirmed,
+  );
+
+  const loadDirectories = async () => {
+    const requestEpoch = directoryRequestEpochRef.current + 1;
+    directoryRequestEpochRef.current = requestEpoch;
+    setEventLineDirectoryState('loading');
+    setEventLineDirectoryError(null);
+    const [clientsResult, eventLinesResult, membersResult] = await Promise.allSettled([
+      getClients(),
+      getEventLines(),
+      getMentionCandidates(''),
+    ]);
+    if (requestEpoch !== directoryRequestEpochRef.current) return;
+
+    const clients = clientsResult.status === 'fulfilled' ? clientsResult.value : [];
+    const members = membersResult.status === 'fulfilled' ? membersResult.value : [];
+    if (eventLinesResult.status === 'rejected') {
       setDirs({
         clients: clients.map((c) => ({ id: c.id, name: c.name })),
-        eventLines: eventLines.map((e) => ({ id: e.id, name: e.name })),
+        eventLines: [],
         members: members.map((m) => ({ id: m.id, fullName: m.fullName })),
       });
-    } catch {
-      /* 名册加载失败 → dirs 保持空 → 全部落背景, 不影响建任务 */
+      setEventLineDirectoryState('error');
+      setEventLineDirectoryError(
+        eventLinesResult.reason instanceof Error ? eventLinesResult.reason.message : '事件线名册读取失败',
+      );
+      return;
     }
+
+    setDirs({
+      clients: clients.map((c) => ({ id: c.id, name: c.name })),
+      eventLines: eventLinesResult.value
+        .filter((e) => isBatchReusableEventLineStatus(e.status))
+        .map((e) => ({ id: e.id, name: e.name, status: e.status })),
+      members: members.map((m) => ({ id: m.id, fullName: m.fullName })),
+    });
+    setEventLineDirectoryState('ready');
   };
 
-  const updateRow = (localId: string, patch: Partial<ParsedBatchTask>) =>
-    setRows((prev) => prev.map((r) => (r.localId === localId ? { ...r, ...patch } : r)));
+  const handleParse = async () => {
+    importSessionIdRef.current = newBatchImportSessionId();
+    setDirs({ clients: [], eventLines: [], members: [] });
+    setApprovedEventLineNames(new Set());
+    setEventLineCreationConfirmed(false);
+    setEventLineDirectoryState('loading');
+    setEventLineDirectoryError(null);
+    setRows(parseBatchTasks(raw));
+    setStage('preview');
+    await loadDirectories();
+  };
 
-  const removeRow = (localId: string) =>
+  const updateRow = (localId: string, patch: Partial<ParsedBatchTask>) => {
+    setEventLineCreationConfirmed(false);
+    setRows((prev) => prev.map((r) => (r.localId === localId ? { ...r, ...patch } : r)));
+  };
+
+  const removeRow = (localId: string) => {
+    setEventLineCreationConfirmed(false);
     setRows((prev) => prev.filter((r) => r.localId !== localId));
+  };
+
+  const toggleApprovedEventLine = (name: string) => {
+    const target = normalizeBatchEventLineName(name);
+    setApprovedEventLineNames((previous) => {
+      const next = new Set(
+        Array.from(previous).filter((item) => normalizeBatchEventLineName(item) !== target),
+      );
+      if (next.size === previous.size) next.add(name);
+      return next;
+    });
+    setEventLineCreationConfirmed(false);
+  };
 
   const handleConfirm = async () => {
+    if (!canConfirmImport) return;
     const toCreate = validRows;
     setStage('saving');
     setProgress({ done: 0, total: toCreate.length });
@@ -124,24 +207,30 @@ export function BatchTaskImportPanel({
       const r = toCreate[i];
       const resolved = resolvedByLocalId.get(r.localId);
       try {
-        // 事件线: 命中已有用其 id; 有名字没命中 → 新建(只传 name), 缓存复用。
-        let eventLineId = resolved?.eventLineId ?? null;
-        const createName = resolved?.eventLineCreateName;
-        if (!eventLineId && createName) {
-          eventLineId = eventLineCache.get(createName) ?? null;
-          if (!eventLineId) {
-            const el = await createEventLine({ name: createName });
-            eventLineId = el.id;
-            eventLineCache.set(createName, el.id);
-          }
-        }
+        // 事件线: 已有的直接复用；未匹配的只有在逐项勾选并二次确认后才允许新建。
+        const eventLineId = await resolveEventLineIdForSave({
+          candidate: {
+            eventLineName: r.eventLineName ?? null,
+            eventLineId: resolved?.eventLineId ?? null,
+          },
+          directoryState: eventLineDirectoryState,
+          approvedCreateNames: approvedEventLineNames,
+          creationConfirmed: eventLineCreationConfirmed,
+          cache: eventLineCache,
+          createEventLine: (payload) => createEventLine(payload, {
+            idempotencyKey: buildBatchEventLineIdempotencyKey(importSessionIdRef.current, payload.name),
+          }),
+        });
         // 负责人: 命中→其 id; 没命中→默认当前用户。协作者含 owner(编辑器语义: collaborators[0]=负责人)。
         const ownerId = resolved?.ownerId || currentUserId;
         const collaboratorIds = Array.from(
           new Set([ownerId, ...(resolved?.collaborators.map((c) => c.id) ?? [])].filter(Boolean) as string[]),
         );
         // 匹配不到的人名并进背景(graceful)。
-        const desc = appendUnmatchedToDesc(r.desc.trim(), resolved?.unmatchedPeople ?? []);
+        const descWithPeople = appendUnmatchedToDesc(r.desc.trim(), resolved?.unmatchedPeople ?? []);
+        const desc = eventLineId
+          ? descWithPeople
+          : appendUnmatchedEventLineToDesc(descWithPeople, r.eventLineName ?? null);
         // 全天区间任务(如 7/2—7/3)补默认工作时段 09:00–18:00, 让日历画成跨天条。
         // 软件不支持"多天全天任务", 跨天必须带时间(见 buildTaskScheduleFromStartEnd v1)。
         // 预览表已显示起止日期, 结果跨天与之一致; 时间可在预览表微调。
@@ -260,6 +349,99 @@ export function BatchTaskImportPanel({
                     将创建 <span className="font-semibold text-[#5B7BFE]">{validRows.length}</span> 条
                     (缺日期或标题的行标红, 不会创建)。可逐行修改。
                   </div>
+                  {eventLineDirectoryState === 'loading' && (
+                    <div className="flex items-center gap-2 rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2.5 text-[12px] text-blue-700">
+                      <Loader2 size={14} className="animate-spin" />
+                      正在核对现有事件线。核对完成前不会创建任务或事件线。
+                    </div>
+                  )}
+                  {eventLineDirectoryState === 'error' && (
+                    <div className="flex items-start justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
+                      <div>
+                        <div className="text-[12px] font-medium text-rose-700">无法核对事件线，已停止创建</div>
+                        <div className="mt-0.5 text-[11px] text-rose-600">
+                          {eventLineDirectoryError || '事件线名册读取失败'}。系统不会把读取失败误当成“需要新建”。
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void loadDirectories()}
+                        className="shrink-0 rounded-md border border-rose-200 bg-white px-2.5 py-1 text-[11px] text-rose-700 hover:bg-rose-50"
+                      >
+                        重新核对
+                      </button>
+                    </div>
+                  )}
+                  {eventLineDirectoryState === 'ready' && (
+                    <div className="space-y-2 rounded-xl border border-gray-200 bg-gray-50/60 p-3">
+                      <div>
+                        <div className="text-[12px] font-medium text-gray-800">事件线处理预览</div>
+                        <div className="mt-0.5 text-[10.5px] text-gray-500">
+                          默认只复用现有事件线。未匹配项不会新建；如确需新建，请逐项勾选并再次确认。
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="rounded-lg border border-emerald-100 bg-white p-2">
+                          <div className="text-[11px] font-medium text-emerald-700">复用哪些 · {reuseEventLines.length}</div>
+                          <div className="mt-1 space-y-1 text-[10.5px] text-gray-600">
+                            {reuseEventLines.length === 0 ? <div className="text-gray-400">无</div> : reuseEventLines.map((item) => (
+                              <div key={item.key} className="truncate" title={item.name}>✓ {item.name}（{item.taskCount} 条任务）</div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-blue-100 bg-white p-2">
+                          <div className="text-[11px] font-medium text-blue-700">新建哪些 · {createEventLines.length}</div>
+                          <div className="mt-1 space-y-1 text-[10.5px] text-gray-600">
+                            {createEventLines.length === 0 ? <div className="text-gray-400">无</div> : createEventLines.map((item) => (
+                              <label key={item.key} className="flex cursor-pointer items-start gap-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked
+                                  onChange={() => toggleApprovedEventLine(item.name)}
+                                  className="mt-0.5 accent-[#5B7BFE]"
+                                />
+                                <span className="min-w-0 truncate" title={item.name}>{item.name}（{item.taskCount} 条）</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-amber-100 bg-white p-2">
+                          <div className="text-[11px] font-medium text-amber-700">未匹配哪些 · {unmatchedEventLines.length}</div>
+                          <div className="mt-1 space-y-1 text-[10.5px] text-gray-600">
+                            {unmatchedEventLines.length === 0 ? <div className="text-gray-400">无</div> : unmatchedEventLines.map((item) => (
+                              <label key={item.key} className="flex cursor-pointer items-start gap-1.5">
+                                <input
+                                  type="checkbox"
+                                  checked={false}
+                                  onChange={() => toggleApprovedEventLine(item.name)}
+                                  className="mt-0.5 accent-[#5B7BFE]"
+                                />
+                                <span className="min-w-0 truncate" title={item.name}>{item.name}（{item.taskCount} 条，不新建）</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      {unmatchedEventLines.length > 0 && (
+                        <div className="text-[10.5px] text-amber-700">
+                          未匹配且未勾选的任务将不关联事件线，原名称会保留在任务背景中。
+                        </div>
+                      )}
+                      {createEventLines.length > 0 && (
+                        <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-2 text-[11px] text-blue-800">
+                          <input
+                            type="checkbox"
+                            checked={eventLineCreationConfirmed}
+                            onChange={(event) => setEventLineCreationConfirmed(event.target.checked)}
+                            className="mt-0.5 accent-[#5B7BFE]"
+                          />
+                          <span>
+                            我确认本次新建 {createEventLines.length} 条事件线，影响 {createEventLines.reduce((sum, item) => sum + item.taskCount, 0)} 条任务。
+                          </span>
+                        </label>
+                      )}
+                    </div>
+                  )}
                   <div className="overflow-hidden rounded-xl border border-gray-150 ring-1 ring-gray-100">
                     <table className="w-full border-collapse text-[12px]">
                       <thead>
@@ -310,8 +492,15 @@ export function BatchTaskImportPanel({
                                   // 协作者
                                   rv?.collaborators.forEach((c) => chips.push({ t: `协作 ${c.name}✓`, c: 'bg-emerald-50 text-emerald-600' }));
                                   // 事件线
-                                  if (rv?.eventLineId) chips.push({ t: `事件线 ${r.eventLineName}✓`, c: 'bg-blue-50 text-blue-600' });
-                                  else if (r.eventLineName) chips.push({ t: `事件线 ${r.eventLineName}(新建)`, c: 'bg-blue-50 text-blue-500' });
+                                  const eventLineDecision = eventLinePlan.find((item) => (
+                                    rv?.eventLineId
+                                      ? item.eventLineId === rv.eventLineId
+                                      : normalizeBatchEventLineName(item.name) === normalizeBatchEventLineName(r.eventLineName || '')
+                                  ))?.decision;
+                                  if (rv?.eventLineId) chips.push({ t: `复用事件线 ${r.eventLineName}`, c: 'bg-emerald-50 text-emerald-600' });
+                                  else if (r.eventLineName && eventLineDecision === 'create') chips.push({ t: `将新建事件线 ${r.eventLineName}`, c: 'bg-blue-50 text-blue-600' });
+                                  else if (r.eventLineName && eventLineDecision === 'unmatched') chips.push({ t: `事件线 ${r.eventLineName} 不新建→背景`, c: 'bg-amber-50 text-amber-700' });
+                                  else if (r.eventLineName) chips.push({ t: `事件线 ${r.eventLineName} 待核对`, c: 'bg-gray-100 text-gray-500' });
                                   // 客户
                                   if (rv?.clientMatched) chips.push({ t: `客户 ${rv.clientMatched}✓`, c: 'bg-violet-50 text-violet-600' });
                                   else if (r.clientName) chips.push({ t: `客户 ${r.clientName}?`, c: 'bg-amber-50 text-amber-600' });
@@ -372,7 +561,10 @@ export function BatchTaskImportPanel({
                   <div className="flex items-center justify-between pt-1">
                     <button
                       type="button"
-                      onClick={() => setStage('input')}
+                      onClick={() => {
+                        directoryRequestEpochRef.current += 1;
+                        setStage('input');
+                      }}
                       className="text-[12px] text-gray-500 hover:text-gray-700"
                     >
                       ← 改文本重解析
@@ -380,10 +572,11 @@ export function BatchTaskImportPanel({
                     <button
                       type="button"
                       onClick={handleConfirm}
-                      disabled={validRows.length === 0}
+                      disabled={!canConfirmImport}
                       className="rounded-lg bg-[#5B7BFE] px-4 py-2 text-[13px] font-medium text-white transition hover:bg-[#4A6AF0] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       创建 {validRows.length} 条任务
+                      {createEventLines.length > 0 && `，并新建 ${createEventLines.length} 条事件线`}
                     </button>
                   </div>
                 </>
@@ -431,9 +624,16 @@ export function BatchTaskImportPanel({
                 <button
                   type="button"
                   onClick={() => {
+                    directoryRequestEpochRef.current += 1;
+                    importSessionIdRef.current = '';
                     setRaw('');
                     setRows([]);
                     setOutcome(null);
+                    setDirs({ clients: [], eventLines: [], members: [] });
+                    setApprovedEventLineNames(new Set());
+                    setEventLineCreationConfirmed(false);
+                    setEventLineDirectoryState('loading');
+                    setEventLineDirectoryError(null);
                     setStage('input');
                   }}
                   className="rounded-lg border border-gray-200 px-4 py-2 text-[13px] text-gray-600 transition hover:bg-gray-50"
